@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 
-from report import belongs_to_run, mean_stdev_markdown, measured_rows, warmed_timings
+from report import belongs_to_run, measured_rows, render_mean_stdev, warmed_timings
 
 
 def read_saved_run(path):
@@ -32,10 +32,11 @@ def read_saved_run(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path, help="saved run directory or its summary.json")
+    parser.add_argument("--markdown", action="store_true", help="print a Markdown report")
     args = parser.parse_args()
     try:
         manifest, rows = read_saved_run(args.results)
-        print(mean_stdev_markdown(manifest, warmed_timings(rows)), end="")
+        print(render_mean_stdev(manifest, warmed_timings(rows), markdown=args.markdown), end="")
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Unable to render timing table: {error}\n")
 

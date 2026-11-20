@@ -50,7 +50,7 @@ from math import sqrt
 import subprocess
 import sys
 
-from report import timing_statistics
+from report import render_mean_stdev, timing_statistics, warmed_timings
 
 assert timing_statistics({"samples_ms": [1, 3]}) == (2, sqrt(2), 2)
 assert timing_statistics({"samples_ms": []}) == (None, None, 0)
@@ -88,10 +88,19 @@ for row, raw in zip((single_report, merge_report), summary["cases"]):
     assert row["committee_verify_n"] == row["final_verify_n"] == "1"
 assert merge_report["proposer_merge_n"] == "1" and merge_report["proposer_merge_sample_stdev_ms"] == ""
 table = summary_path.with_name("results-mean-stdev.md").read_text()
-assert "Reuse" in table
-standalone = subprocess.check_output([sys.executable, "render_table.py", str(summary_path)], text=True)
-assert table == standalone
+command = [sys.executable, "render_table.py", str(summary_path)]
+markdown = subprocess.check_output([*command, "--markdown"], text=True)
+terminal = subprocess.check_output(command, text=True)
+assert table == markdown and "| 64 |" in markdown
+assert "Reuse" in terminal and "Validators" in terminal and "|" not in terminal
+assert "Effective CPU allocation 2.5 CPU equivalents" in terminal
+assert "Container memory limit 3.0 GiB" in terminal
+narrow = render_mean_stdev(summary["run"], warmed_timings(summary["cases"]), width=58)
+assert max(map(len, narrow.splitlines())) <= 58
+for column in ("Comm/slot", "Sigs/comm", "Sigs/slot", "Merges", "Prove one (ms)",
+               "Merge (ms)", "Verify (ms)", "Comm verify (ms)", "Final verify n"):
+    assert column in narrow
 for log in ("run.log", "resume.log"):
-    assert (Path(sys.argv[4]) / log).read_text().endswith(table)
+    assert (Path(sys.argv[4]) / log).read_text().endswith(terminal)
 print("Verified proofs, claim unions, negative checks, runtime limits, resume and timing reports")
 PY

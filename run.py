@@ -24,7 +24,7 @@ from uuid import uuid4
 from environment import hardware, session_fingerprint
 from fixture_bundle import BUNDLE_DIRECTORY, FIXTURE_FORMAT, RECORD_SIZE, SIZES
 from fixture_bundle import digest_records, load_manifest, slot_geometry
-from report import measured_rows, save_json, write_report
+from report import measured_rows, render_mean_stdev, save_json, warmed_timings, write_report
 
 LOG_INV_RATE = 2
 
@@ -445,7 +445,7 @@ def main():
                 rows = measured_rows(args.output, manifest)
                 write_report(args.output, manifest, rows)
             print(f"Reports written to {args.output}", flush=True)
-            table = (args.output / "results-mean-stdev.md").read_text(encoding="utf-8")
+            table = render_mean_stdev(manifest, warmed_timings(rows))
             print(table, end="", flush=True)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Benchmark failed: {error}\n")

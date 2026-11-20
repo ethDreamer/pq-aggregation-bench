@@ -38,13 +38,13 @@ Each output directory holds one run. Repeat the command with `--resume` to skip 
 
 `results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Bundled runs also record the complete bundle digest and the exact fixture-prefix hash for each case. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
 
-`results-mean-stdev.md` gives the slot geometry, warmed committee proving, recursive merging and final verification as mean ± sample standard deviation in milliseconds. A second table gives committee verification and sample counts for all four operations. The standard deviation uses n − 1, with a dash when there are fewer than two samples. Single-committee cases show **Reuse** and have no merge samples. `results-mean-stdev.csv` provides separate numeric mean, sample standard deviation and count columns with blanks for unavailable means or deviations. Initial requests, medians, and individual timings remain in the original reports and raw results. The report updates as cases finish. The container prints the same Markdown table at the end of a successful run or resume.
+`results-mean-stdev.md` gives the slot geometry, warmed committee proving, recursive merging and final verification as mean ± sample standard deviation in milliseconds. A second table gives committee verification and sample counts for all four operations. The standard deviation uses n − 1, with a dash when there are fewer than two samples. Single-committee cases show **Reuse** and have no merge samples. `results-mean-stdev.csv` provides separate numeric mean, sample standard deviation and count columns with blanks for unavailable means or deviations. Initial requests, medians, and individual timings remain in the original reports and raw results. The report updates as cases finish. The container prints the aligned terminal table at the end of a successful run or resume. The saved Markdown and CSV contain the same figures.
 
-Print the timing tables from a saved run directory or its `summary.json`. This command uses Python 3's standard library, reads the existing samples, and leaves the input untouched.
+Print aligned terminal tables from a saved run directory or its `summary.json`. Use `--markdown` for a shareable Markdown report. The renderer uses Python 3's standard library and reads the input without modifying it.
 
 ```sh
-python3 render_table.py /path/to/saved-run > timings.md
-python3 render_table.py /path/to/saved-run/summary.json
+python3 render_table.py /path/to/saved-run
+python3 render_table.py /path/to/saved-run/summary.json --markdown > timings.md
 ```
 
 To regenerate the CSV and all other reports as well, use the report command. Omit `--output` to write beside the saved results, or give a separate directory to keep the source read-only.

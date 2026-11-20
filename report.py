@@ -5,6 +5,9 @@ import io
 import json
 from pathlib import Path
 from statistics import fmean, stdev
+import shutil
+import sys
+from textwrap import fill
 
 GEOMETRY_FIELDS = (
     "active_validators", "committees_per_slot", "signatures_per_committee",
@@ -73,6 +76,34 @@ def markdown_table(columns, rows):
         yield "| " + " | ".join(f"{value:,}" if isinstance(value, int) else value for value in row) + " |"
 
 
+def terminal_table(columns, rows, width=None):
+    cells = [
+        tuple(f"{value:,}" if isinstance(value, int) else value for value in row)
+        for row in rows
+    ]
+    widths = [max(map(len, column)) for column in zip(columns, *cells)]
+    tables = []
+    indices = [0]
+    occupied = widths[0]
+    for index in range(1, len(columns)):
+        if width is not None and len(indices) > 1 and occupied + 2 + widths[index] > width:
+            tables.append(indices)
+            indices = [0]
+            occupied = widths[0]
+        indices.append(index)
+        occupied += 2 + widths[index]
+    tables.append(indices)
+
+    lines = []
+    for indices in tables:
+        if lines:
+            lines.append("")
+        lines.append("  ".join(columns[i].rjust(widths[i]) for i in indices))
+        lines.append("  ".join("-" * widths[i] for i in indices))
+        lines.extend("  ".join(row[i].rjust(widths[i]) for i in indices) for row in cells)
+    return lines
+
+
 def warmed_timings(rows):
     return [
         (
@@ -83,7 +114,7 @@ def warmed_timings(rows):
     ]
 
 
-def mean_stdev_markdown(manifest, data):
+def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     primary, details = [], []
     for slot, timing in data:
         active_validators, _, _, _, merge_jobs = slot
@@ -115,46 +146,80 @@ def mean_stdev_markdown(manifest, data):
         n for _, timings in data for _, _, n in timings if n
     }))
 
-    lines = [
-        "# PQ aggregation benchmark timing statistics",
-        "",
-        f"- Runtime CPU {models} ({architecture}, {execution} execution). Runtime OS {system}.",
-        f"- {visible if visible is not None else 'Unknown number of'} visible logical CPUs. "
+    title = "PQ aggregation benchmark timing statistics"
+    details_title = "Committee verification and sample counts"
+    leanvm = f"`{pin}`" if markdown else pin
+    metadata = [
+        f"Runtime CPU {models} ({architecture}, {execution} execution).",
+        f"{visible if visible is not None else 'Unknown number of'} visible logical CPUs. "
         f"Effective CPU allocation {allocation}. Prover threads {threads}.",
-        f"- Runtime-visible RAM {ram}.{limit_text}",
-        f"- leanVM `{pin}`. Completed {len(data)}/{len(settings['sizes'])} cases.",
+        f"Runtime-visible RAM {ram}.{limit_text}",
+        f"leanVM {leanvm}. Completed {len(data)}/{len(settings['sizes'])} cases.",
     ]
+    if markdown:
+        metadata[0] += f" Runtime OS {system}."
+    else:
+        metadata.insert(1, f"Runtime OS {system}.")
     if settings.get("host_cpu_model"):
-        lines.append(f"- Operator reports a physical host CPU of {settings['host_cpu_model']}.")
+        metadata.append(f"Operator reports a physical host CPU of {settings['host_cpu_model']}.")
     if sample_counts:
-        lines.append(f"- Warmed samples per measured operation (n) {sample_counts}.")
-    lines.extend([
-        "",
+        metadata.append(f"Warmed samples per measured operation (n) {sample_counts}.")
+
+    reuse = "**Reuse**" if markdown else "Reuse"
+    notes = [
         "Timings are arithmetic mean ± sample standard deviation in milliseconds. "
         "The standard deviation uses n − 1 in the denominator. "
         "Both tables use warmed samples and exclude initial requests.",
-        "Single-committee cases show **Reuse** and have zero merge jobs. "
+        f"Single-committee cases show {reuse} and have zero merge jobs. "
         "A dash marks a missing timing or a standard deviation with fewer than two samples.",
-        "",
-        *markdown_table([
-            "Active validators", "Committees / slot", "Signatures / committee", "Signatures / slot",
-            "Merge jobs", "Prove one committee (ms)", "Merge (ms)", "Verify final (ms)",
-        ], primary),
-        "",
-        "## Committee verification and sample counts",
-        "",
-        *markdown_table([
-            "Active validators", "Verify one committee (ms)", "Committee prove n",
-            "Committee verify n", "Merge n", "Final verify n",
-        ], details),
-        "",
-    ])
+    ]
+    if markdown:
+        return "\n".join([
+            f"# {title}", "", *(f"- {line}" for line in metadata), "", *notes, "",
+            *markdown_table([
+                "Active validators", "Committees / slot", "Signatures / committee", "Signatures / slot",
+                "Merge jobs", "Prove one committee (ms)", "Merge (ms)", "Verify final (ms)",
+            ], primary),
+            "", f"## {details_title}", "",
+            *markdown_table([
+                "Active validators", "Verify one committee (ms)", "Committee prove n",
+                "Committee verify n", "Merge n", "Final verify n",
+            ], details),
+            "",
+        ])
+
+    if width is None:
+        width = shutil.get_terminal_size(fallback=(100, 24)).columns if sys.stdout.isatty() else 100
+    columns = (
+        "Validators", "Comm/slot", "Sigs/comm", "Sigs/slot", "Merges",
+        "Prove one (ms)", "Merge (ms)", "Verify (ms)",
+    )
+    primary_table = terminal_table(columns, primary)
+    if len(primary_table[0]) > width:
+        primary_table = [
+            *terminal_table(columns[:5], [row[:5] for row in primary], width),
+            "",
+            *terminal_table((columns[0], *columns[5:]), [(row[0], *row[5:]) for row in primary], width),
+        ]
+    detail_table = terminal_table(
+        ("Validators", "Comm verify (ms)", "Prove n", "Comm verify n", "Merge n", "Final verify n"),
+        details, width,
+    )
+    terminal_notes = [
+        "Mean ± sample SD (ms) of warmed requests. Sample SD uses n − 1. Initial requests are excluded.",
+        "Verify is final verification. Reuse means zero merges. A dash marks missing data or SD (n < 2).",
+    ]
+    lines = [
+        title, "", *(fill(line, width) for line in metadata), "",
+        *(fill(line, width) for line in terminal_notes), "",
+        *primary_table, "", details_title, "", *detail_table, "",
+    ]
     return "\n".join(lines)
 
 
 def write_mean_stdev_report(directory, manifest, rows):
     data = warmed_timings(rows)
-    save_text(directory / "results-mean-stdev.md", mean_stdev_markdown(manifest, data))
+    save_text(directory / "results-mean-stdev.md", render_mean_stdev(manifest, data, markdown=True))
 
     timing_columns = (
         f"{operation}_{statistic}"
