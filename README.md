@@ -1,6 +1,6 @@
 # PQ aggregation benchmark
 
-Measure leanVM’s experimental rate-2 prover with real XMSS committee proofs and recursive slot aggregation. The image has native Linux AMD64 and ARM64 binaries, Python, and a fixture generator. It runs without a Lighthouse build, a testnet, or network access.
+Measure leanVM’s experimental rate-2 prover with real XMSS committee proofs, recursive slot aggregation, and a second proposer round that extends an existing aggregate. The image has native Linux AMD64 and ARM64 binaries, Python, and a fixture generator. It runs without a Lighthouse build, a testnet, or network access.
 
 The default is leanVM [`c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764`](https://github.com/leanEthereum/leanVM/commit/c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764), the [bindings v0.15.0 release](https://github.com/leanEthereum/leanVM/releases/tag/bindings-v0.15.0) selected for devnet-0. The benchmark builds the signer, prover, verifier, and sidecar from that exact commit. It uses the experimental prover at log inverse rate 2 (code rate 1/4).
 
@@ -18,7 +18,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --execution native
 ```
 
-Add `--sizes 64 8192` with a fresh output directory for a quick single-committee proof and real two-child merge. The bundled image reads its 32,768 fixtures directly from a read-only file. An empty or read-only `/fixtures` bind mount can coexist with the bundled fixtures. Docker handles layer compression. Fixture loading and SHA-256 verification are recorded separately from proof timings.
+Add `--sizes 64 8192` with a fresh output directory for a quick single-committee and two-committee check, including improvement. Add `65536` to also check 16-input improvement. The bundled image reads 32,768 current-slot and 30,720 prior-slot fixtures directly from a read-only file. An empty or read-only `/fixtures` bind mount can coexist with the bundled fixtures. Docker handles layer compression. Fixture loading and SHA-256 verification are recorded separately from proof timings.
 
 For a smaller download or a different leanVM pin, use the fixture-free image. It generates missing records on demand and can share a writable cache between runs.
 
@@ -30,7 +30,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --execution native --sizes 64 8192
 ```
 
-Cached records are namespaced by fixture format and leanVM SHA. The runner reports how many are already cached and how many it needs to generate.
+Cached records are namespaced by fixture format, leanVM SHA, and slot workload. The runner reports how many are already cached and how many it needs to generate.
 
 The defaults are five timed repeats and one initial request per repeated operation. Set `--threads` for the prover and `--fixture-threads` for fixture preparation. They default to the effective CPU capacity rounded down, with a minimum of one. Fixture workers never exceed the number of keys. `--reps` controls sample count and `--timeout` controls sidecar startup and socket timeouts. For emulated or unverified execution, keep the default `--execution unverified` or declare `--execution emulated` and use the result for correctness checks.
 
@@ -42,7 +42,7 @@ Each output directory holds one run. Repeat the command with `--resume` to skip 
 
 `results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Bundled runs also record the complete bundle digest and the exact fixture-prefix hash for each case. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
 
-`results-mean-stdev.md` gives the slot geometry, warmed committee proving, recursive merging and final verification as mean ± sample standard deviation in milliseconds. A second table gives committee verification and sample counts for all four operations. The standard deviation uses n − 1, with a dash when there are fewer than two samples. Single-committee cases show **Reuse** and have no merge samples. `results-mean-stdev.csv` provides separate numeric mean, sample standard deviation and count columns with blanks for unavailable means or deviations. Initial requests, medians, and individual timings remain in the original reports and raw results. The report updates as cases finish. The container prints the aligned terminal table at the end of a successful run or resume. The saved Markdown and CSV contain the same figures.
+`results-mean-stdev.md` gives the slot geometry, warmed committee proving, first merging, original final verification, and improvement as mean ± sample standard deviation in milliseconds. The details give committee verification, sample counts for the original operations, and a separate improvement table with fan-in, new and final claim counts, message count, improved verification, and paired two-round latency. The standard deviation uses n − 1, with a dash when there are fewer than two samples. Single-committee cases show **Reuse** in the first-merge column and have no two-round samples. Their improvement timing measures one recursive merge. `results-mean-stdev.csv` provides separate numeric mean, sample standard deviation and count columns with blanks for unavailable means or deviations. Initial requests, medians, and individual timings remain in the original reports and raw results. The report updates as cases finish. The container prints the aligned terminal table at the end of a successful run or resume. The saved Markdown and CSV contain the same figures.
 
 Print aligned terminal tables from a saved run directory or its `summary.json`. Use `--markdown` for a shareable Markdown report. The renderer uses Python 3's standard library and reads the input without modifying it.
 
@@ -67,9 +67,15 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   /opt/pq-bench/report.py /source --output /results
 ```
 
-Resume a benchmark with the exact image digest or benchmark-revision tag you started with.
+Resume a benchmark with the exact image digest or benchmark-revision tag you started with. Use the renderer for original results from before the improvement workload, or repeat the benchmark in a fresh output directory to measure both rounds.
+
+## Workload
 
 The modeled slot has `C = max(1, min(16, N // 4096))` committees with `K = N / (32 * C)` signatures each. It assumes agreeing votes and full participation. Each case starts a fresh sidecar, builds and verifies one proof per committee, and reproves the first committee for the timed samples. A multi-committee case recursively merges the original children and checks the complete claim union on every merge. A one-committee case reuses its proof. The benchmark also checks that a changed message invalidates the first child and, when present, the merged proof.
+
+The improvement workload pairs the original result with `min(C, 15)` fresh full committees from one prior slot. Those committees have disjoint validator keys, a different signed message, and a different signing leaf. This models still-eligible, uncredited votes from disjoint same-epoch committees. It uses synthetic fixtures and assumes full participation in both slots. It checks the exact two-message claim union and rejects attempts to verify the improved proof with a wrong message or with only the original claims. For example, every 16-committee row merges a ready proof of the original 16 committees with 15 prior-slot proofs, for 16 inputs. The largest row expands 32,768 original claims by 30,720 to 63,488 total.
+
+The first-merge column keeps the standalone timing from the original workload. Improvement is timed starting with that round's ready proof. For multi-committee rows, **Two rounds** is the elapsed time of the two consecutive aggregate RPCs in each repetition. Fresh committee proofs are prepared before timing starts, and claim checking and proof verification follow the pair. This measures local execution with the inputs ready, so compare it to a deadline with separate allowance for collection, propagation and proposer work.
 
 Timed requests include Python request construction and local Unix-socket transport. Initial and warmed timings are both recorded. The sidecar performs its own internal initialization and warm-up before accepting the initial request. Fixture generation, signing, networking, consensus state work, and node scheduling are outside the timed intervals.
 
@@ -97,15 +103,18 @@ Future revisions must support the experimental prover feature, sidecar wire v1, 
 
 ### Build the bundled variant
 
-The historical and v0.15.0 bundles contain the same bytes and carry their own leanVM revision in the manifest. The new revision's XMSS verifier accepted every archived record and rejected a changed message for every record. The bundled build repeats these checks and checks the 11 reference hashes. To produce the records from scratch, invoke the fixture-free generator. Use a suitable worker count for the build machine.
+The improvement bundle keeps the original 32,768 current-slot fixtures byte-for-byte and adds 30,720 prior-slot records. Its manifest binds both sets to the full leanVM revision. The bundled build checks all 11 historical current-slot reference hashes and verifies every signature, including a wrong-message negative test for each. To produce the records from scratch, invoke the fixture-free generator. Use a suitable worker count for the build machine.
 
 ```sh
-mkdir -p fixtures/source
+mkdir -p fixtures/source fixtures/prior-source
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/source:/fixtures" \
   ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 32768 4 1
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/prior-source:/fixtures" \
+  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 30720 4 1 --prior-slot
 python3 fixture_bundle.py pack fixtures/source fixtures/bundle \
-  --leanvm-revision c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
+  --prior-slot-source fixtures/prior-source --leanvm-revision c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
 FIXTURE_BUNDLE="$PWD/fixtures/bundle" ./scripts/build-image.sh --load
 ```
 

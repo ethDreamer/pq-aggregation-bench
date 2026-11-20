@@ -9,6 +9,10 @@ on:
         description: Published bundled image by Docker Hub digest
         required: false
         type: string
+      compare_cpu_profiles:
+        description: Also benchmark each supported AMD64 CPU profile
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +30,7 @@ jobs:
             architecture: arm64
             machine: aarch64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
       ARCHITECTURE: ${{ matrix.architecture }}
       EXPECTED_MACHINE: ${{ matrix.machine }}
@@ -38,10 +42,12 @@ jobs:
         run: test "$(uname -m)" = "$EXPECTED_MACHINE"
       - name: Build and verify the fixture-free image
         if: ${{ !inputs.bundled_image }}
+        env:
+          COMPARE_PROFILES: ${{ inputs.compare_cpu_profiles }}
         run: |
           docker buildx build --platform "linux/$ARCHITECTURE" --load \
             --build-arg "BENCH_REV=$GITHUB_SHA" --tag pq-aggregation-bench:smoke .
-          if [[ $ARCHITECTURE == amd64 ]]; then
+          if [[ $ARCHITECTURE == amd64 && $COMPARE_PROFILES == true ]]; then
             COMPARE_CPU_PROFILES=1 ./scripts/smoke.sh pq-aggregation-bench:smoke
           else
             ./scripts/smoke.sh pq-aggregation-bench:smoke

@@ -14,6 +14,17 @@ GEOMETRY_FIELDS = (
     "signatures_per_slot", "merge_operations",
 )
 WARMED_OPERATIONS = ("committee_prove", "proposer_merge", "final_verify", "committee_verify")
+IMPROVEMENT_OPERATIONS = ("proposer_improvement", "paired_first_merge", "two_round_merge", "improved_verify")
+IMPROVEMENT_FIELDS = (
+    "improvement_fan_in", "improvement_fresh_proofs", "improvement_added_claims",
+    "improvement_total_claims", "improvement_message_groups",
+)
+IMPROVEMENT_NOTES = (
+    "Improvement starts from the original result and adds prior-slot proofs. Verify covers the original result.",
+    "Two rounds is paired elapsed time for first merge followed by improvement. "
+    "Committee proving and verification are outside the pair. "
+    "Single-committee cases start from their reused proof and have only one recursive round.",
+)
 
 
 def save_text(path, text):
@@ -108,27 +119,35 @@ def warmed_timings(rows):
     return [
         (
             tuple(row[field] for field in GEOMETRY_FIELDS),
-            tuple(timing_statistics(row[operation]) for operation in WARMED_OPERATIONS),
+            tuple(timing_statistics(row.get(operation))
+                  for operation in WARMED_OPERATIONS + IMPROVEMENT_OPERATIONS),
+            tuple(row.get(field) for field in IMPROVEMENT_FIELDS),
         )
         for row in rows
     ]
 
 
 def render_mean_stdev(manifest, data, *, markdown=False, width=None):
-    primary, details = [], []
-    for slot, timing in data:
+    hardware, build, settings = (manifest[key] for key in ("hardware", "build", "settings"))
+    show_improvement = bool(settings.get("improvement_workload"))
+    primary, details, improvement_details = [], [], []
+    for slot, timing, improvement_geometry in data:
         active_validators, _, _, _, merge_jobs = slot
-        prove, merge, final_verify, committee_verify = timing
-        primary.append((
-            *slot, format_timing(prove), format_timing(merge) if merge_jobs else "Reuse",
-            format_timing(final_verify),
-        ))
+        prove, merge, final_verify, committee_verify, improvement, _, paired, improved_verify = timing
+        primary_row = [*slot, format_timing(prove), format_timing(merge) if merge_jobs else "Reuse",
+                       format_timing(final_verify)]
+        if show_improvement:
+            primary_row.append(format_timing(improvement))
+        primary.append(primary_row)
         details.append((
             active_validators, format_timing(committee_verify),
             prove[2], committee_verify[2], merge[2], final_verify[2],
         ))
+        if show_improvement:
+            improvement_details.append((
+                active_validators, *improvement_geometry, format_timing(improved_verify), format_timing(paired),
+            ))
 
-    hardware, build, settings = (manifest[key] for key in ("hardware", "build", "settings"))
     models = ", ".join(hardware.get("cpu_models") or []) or "unknown"
     architecture = hardware.get("architecture") or "unknown architecture"
     execution = settings.get("execution") or "unknown"
@@ -143,11 +162,12 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     limit_text = f" Container memory limit {limit / 2**30:.1f} GiB." if limit is not None else ""
     pin = (build.get("leanvm_revision") or "unknown")[:12]
     sample_counts = ", ".join(str(n) for n in sorted({
-        n for _, timings in data for _, _, n in timings if n
+        n for _, timings, _ in data for _, _, n in timings if n
     }))
 
     title = "PQ aggregation benchmark timing statistics"
     details_title = "Committee verification and sample counts"
+    improvement_title = "Improvement workload and paired merge latency"
     leanvm = f"`{pin}`" if markdown else pin
     metadata = [
         f"Runtime CPU {models} ({architecture}, {execution} execution).",
@@ -175,23 +195,33 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     reuse = "**Reuse**" if markdown else "Reuse"
     notes = [
         "Timings are arithmetic mean ± sample standard deviation in milliseconds. "
-        "The standard deviation uses n − 1 in the denominator. "
-        "Both tables use warmed samples and exclude initial requests.",
+        "The standard deviation uses n − 1 in the denominator. " +
+        ("All tables" if show_improvement else "Both tables") + " use warmed samples and exclude initial requests.",
         f"Single-committee cases show {reuse} and have zero merge jobs. "
         "A dash marks a missing timing or a standard deviation with fewer than two samples.",
     ]
+    if show_improvement:
+        notes.extend(IMPROVEMENT_NOTES)
     if markdown:
+        improvement_section = []
+        if show_improvement:
+            improvement_section = ["", f"## {improvement_title}", "", *markdown_table([
+                "Active validators", "Fan-in", "Fresh proofs", "New claims", "Final claims",
+                "Message groups", "Improved verify (ms)", "Two rounds (ms)",
+            ], improvement_details)]
         return "\n".join([
             f"# {title}", "", *(f"- {line}" for line in metadata), "", *notes, "",
             *markdown_table([
                 "Active validators", "Committees / slot", "Signatures / committee", "Signatures / slot",
                 "Merge jobs", "Prove one committee (ms)", "Merge (ms)", "Verify final (ms)",
+                *(["Improvement (ms)"] if show_improvement else []),
             ], primary),
             "", f"## {details_title}", "",
             *markdown_table([
                 "Active validators", "Verify one committee (ms)", "Committee prove n",
                 "Committee verify n", "Merge n", "Final verify n",
             ], details),
+            *improvement_section,
             "",
         ])
 
@@ -200,6 +230,7 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     columns = (
         "Validators", "Comm/slot", "Sigs/comm", "Sigs/slot", "Merges",
         "Prove one (ms)", "Merge (ms)", "Verify (ms)",
+        *(("Improvement (ms)",) if show_improvement else ()),
     )
     primary_table = terminal_table(columns, primary)
     if len(primary_table[0]) > width:
@@ -216,10 +247,18 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
         "Mean ± sample SD (ms) of warmed requests. Sample SD uses n − 1. Initial requests are excluded.",
         "Verify is final verification. Reuse means zero merges. A dash marks missing data or SD (n < 2).",
     ]
+    improvement_section = []
+    if show_improvement:
+        terminal_notes.extend(IMPROVEMENT_NOTES)
+        improvement_section = ["", improvement_title, "", *terminal_table(
+            ("Validators", "Fan-in", "Fresh proofs", "New claims", "Final claims", "Messages",
+             "Improved verify (ms)", "Two rounds (ms)"),
+            improvement_details, width,
+        )]
     lines = [
         title, "", *(fill(line, width) for line in metadata), "",
         *(fill(line, width) for line in terminal_notes), "",
-        *primary_table, "", details_title, "", *detail_table, "",
+        *primary_table, "", details_title, "", *detail_table, *improvement_section, "",
     ]
     return "\n".join(lines)
 
@@ -228,16 +267,24 @@ def write_mean_stdev_report(directory, manifest, rows):
     data = warmed_timings(rows)
     save_text(directory / "results-mean-stdev.md", render_mean_stdev(manifest, data, markdown=True))
 
+    show_improvement = bool(manifest["settings"].get("improvement_workload"))
+    operations = WARMED_OPERATIONS + (IMPROVEMENT_OPERATIONS if show_improvement else ())
     timing_columns = (
         f"{operation}_{statistic}"
-        for operation in WARMED_OPERATIONS
+        for operation in operations
         for statistic in ("mean_ms", "sample_stdev_ms", "n")
     )
+    geometry_columns = IMPROVEMENT_FIELDS if show_improvement else ()
     numeric = (
-        (*slot, *(value for operation in timing for value in operation))
-        for slot, timing in data
+        (
+            *slot,
+            *(value for operation in timing[:len(operations)] for value in operation),
+            *(geometry if show_improvement else ()),
+        )
+        for slot, timing, geometry in data
     )
-    write_csv(directory / "results-mean-stdev.csv", (*GEOMETRY_FIELDS, *timing_columns), numeric)
+    write_csv(directory / "results-mean-stdev.csv",
+              (*GEOMETRY_FIELDS, *timing_columns, *geometry_columns), numeric)
 
 
 def write_report(directory, manifest, rows):
@@ -249,6 +296,10 @@ def write_report(directory, manifest, rows):
         "Committee verify median (ms)", "First merge (ms)", "Merge median (ms)",
         "Final verify median (ms)", "Final proof (bytes)", "Samples per operation",
     ]
+    show_improvement = bool(manifest["settings"].get("improvement_workload"))
+    if show_improvement:
+        columns.extend(["Improvement fan-in", "New claims", "Improvement median (ms)",
+                        "Two rounds median (ms)"])
     table = []
     for row in rows:
         merge = row["proposer_merge"]
@@ -266,6 +317,13 @@ def write_report(directory, manifest, rows):
             row["final_proof_bytes"],
             len(row["committee_prove"]["samples_ms"]),
         ])
+        if show_improvement:
+            paired = row["two_round_merge"]
+            table[-1].extend([
+                row["improvement_fan_in"], row["improvement_added_claims"],
+                round(row["proposer_improvement"]["median_ms"], 2),
+                round(paired["median_ms"], 2) if paired else None,
+            ])
 
     write_csv(directory / "results.csv", columns, table)
     write_mean_stdev_report(directory, manifest, rows)
@@ -308,7 +366,8 @@ def write_report(directory, manifest, rows):
     bundle = build.get("fixture_bundle")
     if bundle:
         lines.append(
-            f"- Bundled fixtures {bundle['record_count']:,}, SHA-256 `{bundle['sha256']}`. "
+            f"- Bundled fixtures {bundle['record_count'] + bundle.get('prior_slot', {}).get('record_count', 0):,}, "
+            f"SHA-256 `{bundle['sha256']}`. "
             "The image reads the fixtures without generating them."
         )
     if settings["host_cpu_model"]:
@@ -331,6 +390,8 @@ def write_report(directory, manifest, rows):
         "Times include Python request construction and local socket transport. Fixture creation, "
         "signing, network propagation, consensus state and node scheduling are outside the timed workload.",
         "",
+        *(IMPROVEMENT_NOTES if show_improvement else ()),
+        *([""] if show_improvement else []),
         "See [summary.json](summary.json) for runtime and build metadata, initial and warmed timing "
         "samples, fixture hashes, proof sizes and load averages.",
         "",

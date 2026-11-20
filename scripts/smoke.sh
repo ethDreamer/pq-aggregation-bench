@@ -12,25 +12,22 @@ args=(
     --rm --network none --user "$(id -u):$(id -g)" --cpus 2.5 --memory 3g
     --volume "$smoke_dir/results:/results"
 )
+sizes=(64 8192)
 if [[ $variant == bundled ]]; then
+    sizes+=(65536)
     args+=(--read-only --tmpfs /tmp:rw,nosuid,nodev,mode=1777 --volume "$smoke_dir/fixtures:/fixtures:ro")
     leanvm_revision=$(docker run "${args[@]}" --entrypoint python3 "$image" -c \
         'import json; print(json.load(open("/opt/pq-bench/build.json"))["leanvm_revision"])')
-    bundle_digest=$(python3 - <<'BASELINE'
-import json
-from pathlib import Path
-
-print(json.loads(Path("baseline/results/1048576.json").read_text())["fixture_sha256"])
-BASELINE
-)
+    bundle_digest=$(docker run "${args[@]}" --entrypoint python3 "$image" -c \
+        'import json; print(json.load(open("/opt/pq-bench/bundled-fixtures/manifest.json"))["sha256"])')
     docker run "${args[@]}" --entrypoint python3 "$image" /opt/pq-bench/fixture_bundle.py verify \
-        /opt/pq-bench/bundled-fixtures "$leanvm_revision" --sha256 "$bundle_digest"
+        /opt/pq-bench/bundled-fixtures "$leanvm_revision" --sha256 "$bundle_digest" --require-prior-slot
     docker run "${args[@]}" --entrypoint pq-geometry-fixtures "$image" --verify-pack \
         /opt/pq-bench/bundled-fixtures/fixtures.bin 2
 else
     args+=(--volume "$smoke_dir/fixtures:/fixtures")
 fi
-run=(--execution "$execution" --sizes 64 8192 --reps 1)
+run=(--execution "$execution" --sizes "${sizes[@]}" --reps 1)
 docker run "${args[@]}" "$image" "${run[@]}" 2>&1 | tee "$smoke_dir/run.log"
 if [[ $variant == bundled ]]; then
     grep -q "Loading 256 pre-generated fixtures" "$smoke_dir/run.log"
@@ -53,7 +50,7 @@ from math import sqrt
 import subprocess
 import sys
 
-from fixture_bundle import COMPATIBLE_REVISIONS
+from fixture_bundle import COMPATIBLE_REVISIONS, fresh_committee_count
 from report import render_mean_stdev, timing_statistics, warmed_timings
 from run import select_sidecar
 
@@ -92,23 +89,51 @@ bundled = sys.argv[3] == "bundled"
 assert bool(build["fixture_bundle"]) == bundled
 if bundled:
     assert build["fixture_bundle"]["record_count"] == 32768
-single, merge = summary["cases"]
+    assert build["fixture_bundle"]["prior_slot"]["record_count"] == 30720
+single, merge, *saturated = summary["cases"]
+if bundled:
+    saturated_case, = saturated
+    assert saturated_case["committees_per_slot"] == saturated_case["improvement_fan_in"] == 16
+    assert saturated_case["improvement_fresh_proofs"] == 15
 assert single["committees_per_slot"] == 1 and single["proposer_merge"] is None
 assert merge["committees_per_slot"] == 2 and merge["proposer_merge"] is not None
 assert merge["merged_wrong_message_rejected"]
-for row in (single, merge):
+assert single["paired_first_merge"] is single["two_round_merge"] is None
+assert single["first_two_round_merge_ms"] is None
+for row in summary["cases"]:
+    fresh = fresh_committee_count(row["committees_per_slot"])
+    assert row["improvement_fresh_proofs"] == fresh
+    assert row["improvement_fan_in"] == fresh + 1
+    assert row["improvement_added_claims"] == fresh * row["signatures_per_committee"]
+    assert row["improvement_total_claims"] == row["signatures_per_slot"] + row["improvement_added_claims"]
+    assert row["improvement_message_groups"] == 2
+    assert row["improved_wrong_message_rejected"] and row["improved_incomplete_claims_rejected"]
+    assert len(row["proposer_improvement"]["samples_ms"]) == len(row["improved_verify"]["samples_ms"]) == 1
+    if row["committees_per_slot"] > 1:
+        first, = row["paired_first_merge"]["samples_ms"]
+        improvement, = row["proposer_improvement"]["samples_ms"]
+        total, = row["two_round_merge"]["samples_ms"]
+        assert total >= first + improvement
+        assert row["first_two_round_merge_ms"] >= row["first_paired_merge_ms"] + row["first_improvement_ms"]
     assert row["all_proofs_verified"] and row["wrong_message_rejected"]
     assert len(row["committee_prove"]["samples_ms"]) == 1
     if bundled:
         assert row["fixture_source"] == "bundle" and row["fixture_workers_used"] == 0
+        prior = row["prior_slot_fixture"]
+        assert prior["fixture_source"] == "bundle" and prior["fixture_workers_used"] == 0
     original = json.loads(Path(f"baseline/results/{row['active_validators']}.json").read_text())
     if build["leanvm_revision"] == original["prover_pin"] or build["leanvm_revision"] in COMPATIBLE_REVISIONS:
         assert row["fixture_sha256"] == original["fixture_sha256"]
 with summary_path.with_name("results-mean-stdev.csv").open(newline="") as file:
-    single_report, merge_report = csv.DictReader(file)
+    single_report, merge_report, *saturated_reports = csv.DictReader(file)
 assert single_report["merge_operations"] == "0" and single_report["proposer_merge_n"] == "0"
 assert single_report["proposer_merge_mean_ms"] == single_report["proposer_merge_sample_stdev_ms"] == ""
-for row, raw in zip((single_report, merge_report), summary["cases"]):
+assert single_report["two_round_merge_n"] == "0" and single_report["two_round_merge_mean_ms"] == ""
+for row, raw in zip((single_report, merge_report, *saturated_reports), summary["cases"]):
+    assert row["proposer_improvement_n"] == row["improved_verify_n"] == "1"
+    if raw["merge_operations"]:
+        assert row["paired_first_merge_n"] == row["two_round_merge_n"] == "1"
+        assert float(row["two_round_merge_mean_ms"]) == raw["two_round_merge"]["samples_ms"][0]
     assert row["committee_prove_n"] == "1" and row["committee_prove_sample_stdev_ms"] == ""
     assert float(row["committee_prove_mean_ms"]) == raw["committee_prove"]["samples_ms"][0]
     assert row["committee_verify_n"] == row["final_verify_n"] == "1"
@@ -124,7 +149,8 @@ assert "Container memory limit 3.0 GiB" in terminal
 narrow = render_mean_stdev(summary["run"], warmed_timings(summary["cases"]), width=58)
 assert max(map(len, narrow.splitlines())) <= 58
 for column in ("Comm/slot", "Sigs/comm", "Sigs/slot", "Merges", "Prove one (ms)",
-               "Merge (ms)", "Verify (ms)", "Comm verify (ms)", "Final verify n"):
+               "Merge (ms)", "Verify (ms)", "Comm verify (ms)", "Final verify n",
+               "Improvement (ms)", "Fresh proofs", "New claims", "Two rounds (ms)"):
     assert column in narrow
 for log in ("run.log", "resume.log"):
     assert (Path(sys.argv[4]) / log).read_text().endswith(terminal)

@@ -14,6 +14,8 @@ const TWEAK_RANDOMIZER: u8 = 7;
 const SIGNATURE_BYTES: usize = 2404;
 const RECORD_BYTES: usize = 32 + 32 + SIGNATURE_BYTES;
 const MAX_RECORDS: usize = 32768;
+const MAX_PRIOR_SLOT_RECORDS: usize = 30720;
+const CURRENT_LEAF: u32 = 32768;
 
 // Helpers used by the unmodified upstream WOTS signer (private in its crate).
 fn th_digests(pp: &PublicParam, tw: &Tweak, values: &[Digest]) -> Digest {
@@ -124,7 +126,11 @@ fn check_signature(
 fn verify_pack(path: &Path, threads: usize) -> Result<(), String> {
     let payload = fs::read(path).map_err(|e| e.to_string())?;
     let count = payload.len() / RECORD_BYTES;
-    if threads == 0 || count == 0 || count > MAX_RECORDS || payload.len() % RECORD_BYTES != 0 {
+    if threads == 0
+        || count == 0
+        || count > MAX_RECORDS + MAX_PRIOR_SLOT_RECORDS
+        || payload.len() % RECORD_BYTES != 0
+    {
         return Err("invalid fixture pack size or thread count".into());
     }
     let records_per_worker = count.div_ceil(threads);
@@ -188,9 +194,21 @@ fn main() -> Result<(), String> {
         .ok_or("missing messages")?
         .parse()
         .map_err(|_| "bad messages")?;
-    if threads == 0 || messages != 1 || count > MAX_RECORDS {
+    let prior_slot = match args.get(5).map(String::as_str) {
+        None => false,
+        Some("--prior-slot") if args.len() == 6 => true,
+        _ => return Err("expected optional --prior-slot".into()),
+    };
+    let (limit, key_offset, leaf) = if prior_slot {
+        (MAX_PRIOR_SLOT_RECORDS, MAX_RECORDS, CURRENT_LEAF - 1)
+    } else {
+        (MAX_RECORDS, 0, CURRENT_LEAF)
+    };
+    if threads == 0 || messages != 1 || count > limit {
         return Err("invalid bounds".into());
     }
+    let mut message = [0x42; 32];
+    message[..8].copy_from_slice(&u64::from(prior_slot).to_le_bytes());
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let next = AtomicUsize::new(0);
     let generated = AtomicUsize::new(0);
@@ -214,14 +232,8 @@ fn main() -> Result<(), String> {
                         // Public, deterministic BENCHMARK seeds; never use these for deposits.
                         let mut seed = [0x73; 32];
                         seed[..16].copy_from_slice(b"pq-geometry-2026");
-                        seed[16..24].copy_from_slice(&(index as u64).to_le_bytes());
-                        let mut bytes = Vec::with_capacity(messages * RECORD_BYTES);
-                        for number in 0..messages {
-                            let mut message = [0x42; 32];
-                            message[..8].copy_from_slice(&(number as u64).to_le_bytes());
-                            let leaf = 32768 + number as u32;
-                            bytes.extend_from_slice(&fixture(&seed, &message, leaf)?);
-                        }
+                        seed[16..24].copy_from_slice(&((key_offset + index) as u64).to_le_bytes());
+                        let bytes = fixture(&seed, &message, leaf)?;
                         let temporary = path.with_extension("tmp");
                         fs::write(&temporary, &bytes).map_err(|e| e.to_string())?;
                         fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
