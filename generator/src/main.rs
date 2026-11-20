@@ -135,7 +135,7 @@ fn main() -> Result<(), String> {
     }
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let next = AtomicUsize::new(0);
-    let completed = AtomicUsize::new(0);
+    let generated = AtomicUsize::new(0);
     let started = Instant::now();
     std::thread::scope(|scope| {
         let mut workers = Vec::new();
@@ -167,13 +167,13 @@ fn main() -> Result<(), String> {
                         let temporary = path.with_extension("tmp");
                         fs::write(&temporary, &bytes).map_err(|e| e.to_string())?;
                         fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
-                    }
-                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if done % 32 == 0 || done == count {
-                        eprintln!(
-                            "fixtures {done}/{count}, elapsed {:.1}s",
-                            started.elapsed().as_secs_f64()
-                        );
+                        let done = generated.fetch_add(1, Ordering::Relaxed) + 1;
+                        if done % 32 == 0 {
+                            eprintln!(
+                                "Generated {done} new fixtures in {:.1}s",
+                                started.elapsed().as_secs_f64()
+                            );
+                        }
                     }
                 }
                 Ok(())
@@ -184,8 +184,10 @@ fn main() -> Result<(), String> {
         }
         Ok::<(), String>(())
     })?;
+    let generated = generated.load(Ordering::Relaxed);
+    let reused = count - generated;
     eprintln!(
-        "complete: {count} keys × {messages} messages, {:.3}s",
+        "Prepared {count} keys in {:.3}s ({generated} generated, {reused} cached)",
         started.elapsed().as_secs_f64()
     );
     Ok(())

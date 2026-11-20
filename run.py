@@ -22,13 +22,10 @@ import time
 from uuid import uuid4
 
 from environment import hardware, session_fingerprint
+from fixture_bundle import BUNDLE_DIRECTORY, FIXTURE_FORMAT, RECORD_SIZE, SIZES
+from fixture_bundle import digest_records, load_manifest, slot_geometry
 from report import measured_rows, save_json, write_report
 
-SIZES = (64, 1024, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576)
-RECORD_SIZE = 32 + 32 + 2404
-FIXTURE_FORMAT = "one-leaf-xmss-v1"
-ATT_MESSAGE = bytes(8) + bytes([0x42]) * 24
-ATT_LEAF = 32768
 LOG_INV_RATE = 2
 
 
@@ -153,22 +150,40 @@ def claims_for(records):
 
 
 def prepare_fixtures(args, manifest, count):
-    revision = manifest["build"]["leanvm_revision"]
-    directory = args.fixture_cache / FIXTURE_FORMAT / revision
-    directory.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
-    with run_lock(directory / ".lock", blocking=True):
-        workers = min(count, manifest["settings"]["fixture_threads"])
-        subprocess.run([args.generator, str(directory), str(count), str(workers), "1"], check=True)
-        records = [(directory / f"key-{index:05}.bin").read_bytes() for index in range(count)]
-    require(all(len(record) == RECORD_SIZE for record in records), "Wrong fixture size")
-    require(len({record[:32] for record in records}) == count, "Public keys must be disjoint")
-    require(all(record[32:64] == ATT_MESSAGE for record in records), "Unexpected attestation message")
-    require(
-        all(struct.unpack_from("<I", record, 64)[0] == ATT_LEAF for record in records),
-        "Unexpected XMSS leaf index",
-    )
-    return records, time.monotonic() - start, workers
+    build = manifest["build"]
+    workers = 0
+    bundle = build["fixture_bundle"]
+    if bundle:
+        fixture_source = "bundle"
+        print(f"  Loading {count} pre-generated fixtures from the image", flush=True)
+        with (BUNDLE_DIRECTORY / "fixtures.bin").open("rb") as payload:
+            records = [payload.read(RECORD_SIZE) for _ in range(count)]
+    else:
+        fixture_source = "cache"
+        directory = args.fixture_cache / FIXTURE_FORMAT / build["leanvm_revision"]
+        directory.mkdir(parents=True, exist_ok=True)
+        with run_lock(directory / ".lock", blocking=True):
+            paths = [directory / f"key-{index:05}.bin" for index in range(count)]
+            missing = sum(not path.is_file() for path in paths)
+            if missing:
+                fixture_source = "generated"
+                workers = min(missing, manifest["settings"]["fixture_threads"])
+                print(f"  Generating {missing} fixtures; {count - missing} already cached", flush=True)
+                subprocess.run([args.generator, str(directory), str(count), str(workers), "1"], check=True)
+            else:
+                print(f"  Reusing {count} cached fixtures", flush=True)
+            records = [path.read_bytes() for path in paths]
+
+    digest = digest_records(records)
+    if bundle:
+        require(digest == bundle["prefix_sha256"][str(count)], "Bundled fixture prefix failed its SHA-256 check")
+    return records, {
+        "fixture_source": fixture_source,
+        "fixture_sha256": digest,
+        "fixture_preparation_seconds": time.monotonic() - start,
+        "fixture_workers_used": workers,
+    }
 
 
 def timed(call):
@@ -214,8 +229,7 @@ def repeat_proof(repetitions, connection, children, records, claims, label=None)
 
 
 def run_case(args, manifest, size):
-    committees = max(1, min(16, size // 4096))
-    per_committee = size // (32 * committees)
+    committees, per_committee = slot_geometry(size)
     count = committees * per_committee
     settings = manifest["settings"]
     result = {
@@ -227,13 +241,9 @@ def run_case(args, manifest, size):
         "merge_operations": int(committees > 1),
         "utc_start": utc_now(),
     }
-    print(f"N={size}, C={committees}, K={per_committee}. Preparing {count} fixtures.", flush=True)
-    records, fixture_seconds, workers = prepare_fixtures(args, manifest, count)
-    result.update(
-        fixture_sha256=hashlib.sha256(b"".join(records)).hexdigest(),
-        fixture_preparation_seconds=fixture_seconds,
-        fixture_workers_used=workers,
-    )
+    print(f"N={size}, C={committees}, K={per_committee}", flush=True)
+    records, fixture_metadata = prepare_fixtures(args, manifest, count)
+    result.update(fixture_metadata)
     expected = claims_for(records)
     groups = [
         records[start:start + per_committee] for start in range(0, len(records), per_committee)
@@ -333,9 +343,12 @@ def build_info(args):
         with open(path, "rb") as binary:
             digest = hashlib.file_digest(binary, "sha256").hexdigest()
         require(digest == result[key], f"Executable hash differs from build metadata: {path}")
+    result["fixture_bundle"] = (
+        load_manifest(BUNDLE_DIRECTORY, result["leanvm_revision"]) if BUNDLE_DIRECTORY.exists() else None
+    )
     result["harness_sha256"] = {
         name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-        for name in ("run.py", "environment.py", "report.py")
+        for name in ("run.py", "environment.py", "fixture_bundle.py", "report.py")
     }
     return result
 

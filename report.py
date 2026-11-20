@@ -85,7 +85,7 @@ def write_report(directory, manifest, rows):
         f"- Runtime {hardware['os']} {hardware['os_release'] or ''}, kernel "
         f"{hardware['kernel_release']}, {hardware['architecture']}. "
         f"Image target `{build['target_platform']}`, execution **{settings['execution']}**.",
-        f"- CPU visible to runtime: {cpu_models}. Logical CPUs {hardware['logical_cpus_visible']}, "
+        f"- Runtime CPU model {cpu_models}. Logical CPUs {hardware['logical_cpus_visible']}, "
         f"effective capacity {cpu_capacity:g}, cgroup CPU quota "
         f"{f'{cpu_quota:g} cores' if cpu_quota is not None else 'unknown or unlimited'}.",
         f"- Runtime-visible memory {gib(hardware['memory_visible_bytes'])}. "
@@ -96,9 +96,15 @@ def write_report(directory, manifest, rows):
         f"- Sidecar SHA-256 `{build['sidecar_sha256']}`.",
         f"- Fixture generator SHA-256 `{build['fixture_generator_sha256']}`.",
     ]
+    bundle = build.get("fixture_bundle")
+    if bundle:
+        lines.append(
+            f"- Bundled fixtures {bundle['record_count']:,}, SHA-256 `{bundle['sha256']}`. "
+            "The image reads the fixtures without generating them."
+        )
     if settings["host_cpu_model"]:
         supplied_model = settings["host_cpu_model"].replace("|", "\\|")
-        lines.append(f"- Host CPU supplied by operator: {supplied_model}.")
+        lines.append(f"- Operator reports a physical host CPU of {supplied_model}.")
     if settings["execution"] != "native":
         lines.append("- Use these results for validation only. Comparative timings require native execution.")
 

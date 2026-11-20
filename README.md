@@ -6,7 +6,19 @@ The default leanVM commit is [`283686575c4e81790591d2c6e3ed21c69c0e3bbe`](https:
 
 ## Run
 
-Check `docker info --format '{{.Architecture}}'` for the Docker engine’s architecture. On a native Linux AMD64 or ARM64 engine, let Docker select the matching image and use `--execution native`. The quick run creates a single-committee proof and then a real two-child merge.
+Use the **bundled image** to run the full 11-case sweep without generating fixtures. On a native Linux AMD64 or ARM64 engine, let Docker select the matching image and use `--execution native`. Check the engine architecture with `docker info --format '{{.Architecture}}'`.
+
+```sh
+mkdir -p results/full
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results/full:/results" \
+  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e-fixtures \
+  --execution native
+```
+
+Add `--sizes 64 8192` with a fresh output directory for a quick single-committee proof and real two-child merge. The bundled image reads its 32,768 fixtures directly from a read-only file. An empty or read-only `/fixtures` bind mount can coexist with the bundled fixtures. Docker handles layer compression. Fixture loading and SHA-256 verification are recorded separately from proof timings.
+
+For a smaller download or a different leanVM pin, use the fixture-free image. It generates missing records on demand and can share a writable cache between runs.
 
 ```sh
 mkdir -p results/quick fixtures
@@ -16,7 +28,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   --execution native --sizes 64 8192
 ```
 
-For the full 11-case sweep, use a fresh output directory and omit `--sizes`. The full fixture cache contains 32,768 deterministic records, about 77 MiB plus filesystem overhead. Fixture creation runs outside the timed workload. Share the fixture mount across runs to reuse the records. The cache is namespaced by fixture format and leanVM SHA.
+Cached records are namespaced by fixture format and leanVM SHA. The runner reports how many are already cached and how many it needs to generate.
 
 The defaults are five timed repeats and one initial request per repeated operation. Set `--threads` for the prover and `--fixture-threads` for fixture preparation. They default to the effective CPU capacity rounded down, with a minimum of one. Fixture workers never exceed the number of keys. `--reps` controls sample count and `--timeout` controls sidecar startup and socket timeouts. For emulated or unverified execution, keep the default `--execution unverified` or declare `--execution emulated` and use the result for correctness checks.
 
@@ -24,7 +36,7 @@ Each output directory holds one run. Repeat the command with `--resume` to skip 
 
 ## Results
 
-`results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
+`results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Bundled runs also record the complete bundle digest and the exact fixture-prefix hash for each case. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
 
 The modeled slot has `C = max(1, min(16, N // 4096))` committees with `K = N / (32 * C)` signatures each. It assumes agreeing votes and full participation. Each case starts a fresh sidecar, builds and verifies one proof per committee, and reproves the first committee for the timed samples. A multi-committee case recursively merges the original children and checks the complete claim union on every merge. A one-committee case reuses its proof. The benchmark also checks that a changed message invalidates the first child and, when present, the merged proof.
 
@@ -51,6 +63,21 @@ LEANVM_REV=refs/heads/my-upstream-branch ./scripts/build-image.sh --load
 The helper emits `leanvm-<12-character-sha>` and `leanvm-<12-character-sha>-bench-<12-character-harness-sha>` tags. With a registry login, authorized repository, and a two-platform Buildx builder, use `IMAGE=your-registry/your-repo ./scripts/build-image.sh --push` to publish one index for Linux AMD64 and ARM64. Use the registry digest when you need an immutable image reference. The build labels store the full SHAs. `RUST_IMAGE` can override the Rust base if a newer revision needs a different toolchain.
 
 Future revisions must support the experimental prover feature, sidecar wire v1, the rate-2 request, and the XMSS layout and helpers used here. A revision that changes these interfaces requires an update to the harness. Run `./scripts/smoke.sh IMAGE` after changing the pin. GitHub Actions runs the smoke on native AMD64 and ARM64 runners.
+
+### Build the bundled variant
+
+The fixture pack must match all 11 baseline fixture hashes and the selected leanVM revision. To produce the records from scratch, invoke the generator in the fixture-free image. Use a suitable worker count for the build machine.
+
+```sh
+mkdir -p fixtures/source
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/source:/fixtures" \
+  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e /fixtures 32768 4 1
+python3 fixture_bundle.py pack fixtures/source fixtures/bundle
+FIXTURE_BUNDLE="$PWD/fixtures/bundle" ./scripts/build-image.sh --load
+```
+
+`FIXTURE_BUNDLE` selects the two `-fixtures` tags. The fixture payload is passed as a separate build context and stays out of Git. The image records its full SHA-256 and exposes the same bytes on both architectures. An override to a different leanVM revision can use the fixture-free build.
 
 Linux AMD64 uses SSSE3 and PCLMULQDQ. Linux ARM64 uses the ARMv8 AES/PMULL extension and jemalloc configured to support kernels with up to 64 KiB pages. These match the published devnet build flags and work on compatible CPUs without inheriting the builder’s CPU features. Host-tuned builds can select different prover kernels and should be reported separately.
 

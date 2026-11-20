@@ -42,8 +42,16 @@ fi
 source_revision=$(git rev-parse HEAD)
 image=${IMAGE:-ethdreamer/pq-aggregation-bench}
 tag="$image:leanvm-${revision:0:12}"
+options=("$mode")
+if [[ -n ${FIXTURE_BUNDLE:-} ]]; then
+    bundle_directory=$(cd "$FIXTURE_BUNDLE" && pwd -P)
+    fixture_digest=$(python3 fixture_bundle.py verify "$bundle_directory" "$revision")
+    tag="$tag-fixtures"
+    options+=(--target bundled --build-context "fixture_bundle=$bundle_directory")
+    options+=(--build-arg "FIXTURE_BUNDLE_SHA256=$fixture_digest")
+fi
 source_tag="$tag-bench-${source_revision:0:12}"
-options=("$mode" --tag "$tag" --tag "$source_tag")
+options+=(--tag "$tag" --tag "$source_tag")
 if [[ $mode == --push ]]; then
     options+=(--platform linux/amd64,linux/arm64)
 fi
