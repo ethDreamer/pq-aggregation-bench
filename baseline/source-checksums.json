@@ -1,0 +1,9 @@
+{
+  "run.py": "2d10b4b6f929c03d1966b27ed08f0b659e03ee1e09cb6941718ed4441a71591a",
+  "generator/src/main.rs": "7901abf7c65f4aeabfedeee3040695c3619b277666e8ea5c1dfd768342c061b1",
+  "generator/src/upstream_wots.rs": "4f923e1f432d468076d19ab03a59d504753a248cd98c0dde89880a72caf7ae59",
+  "generator/Cargo.toml": "8a848551c18f73661ea1db19cd756eeb3a5beeaabc7dd21aa9806d48cd519067",
+  "generator/Cargo.lock": "db69aeaf4036b6830c7a0f6185d2504a170590ca2b3cd040512d14a95edf4403",
+  "generator/target/release/pq-geometry-fixtures": "36a25a5b2b14d3f9a5f38e7384272f5f99f11f317a3e5c2c66db3cfadfbd7384",
+  "summarize.py": "e2fe2bcea6d151a49d284c31129faf9e00caa828b961cc07878680d84e59f4d8"
+}

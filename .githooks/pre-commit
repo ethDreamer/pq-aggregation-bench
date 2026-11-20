@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+rustfmt --edition 2024 --check --config skip_children=true generator/src/main.rs

@@ -1,0 +1,57 @@
+# PQ aggregation benchmark
+
+Measure leanVM’s experimental rate-2 prover with real XMSS committee proofs and recursive slot aggregation. The image has native Linux AMD64 and ARM64 binaries, Python, and a fixture generator. It runs without a Lighthouse build, a testnet, or network access.
+
+The default leanVM commit is [`283686575c4e81790591d2c6e3ed21c69c0e3bbe`](https://github.com/leanEthereum/leanVM/commit/283686575c4e81790591d2c6e3ed21c69c0e3bbe). It matches the published `ethpandaops/lighthouse:pq-devnet-0` image at index `sha256:f571048fbeeb9b3e7eaede512f94e74a09dcc73b4f0565dc5afe3365f122f771` and its [Lighthouse source](https://github.com/ethDreamer/lighthouse/blob/9deb902a682900fa9f7b1d0dd6daa260eecf0bbd/beacon_node/pq_prover/src/lib.rs).
+
+## Run
+
+Check `docker info --format '{{.Architecture}}'` for the Docker engine’s architecture. On a native Linux AMD64 or ARM64 engine, let Docker select the matching image and use `--execution native`. The quick run creates a single-committee proof and then a real two-child merge.
+
+```sh
+mkdir -p results/quick fixtures
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results/quick:/results" -v "$PWD/fixtures:/fixtures" \
+  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e \
+  --execution native --sizes 64 8192
+```
+
+For the full 11-case sweep, use a fresh output directory and omit `--sizes`. The full fixture cache contains 32,768 deterministic records, about 77 MiB plus filesystem overhead. Fixture creation runs outside the timed workload. Share the fixture mount across runs to reuse the records. The cache is namespaced by fixture format and leanVM SHA.
+
+The defaults are five timed repeats and one initial request per repeated operation. Set `--threads` for the prover and `--fixture-threads` for fixture preparation. They default to the effective CPU capacity rounded down, with a minimum of one. Fixture workers never exceed the number of keys. `--reps` controls sample count and `--timeout` controls sidecar startup and socket timeouts. For emulated or unverified execution, keep the default `--execution unverified` or declare `--execution emulated` and use the result for correctness checks.
+
+Each output directory holds one run. Repeat the command with `--resume` to skip completed rows after interruption. Resume requires the same kernel boot, hardware limits, executable hashes, benchmark code, settings, and case selection. A different machine, reboot, pin, or settings requires a new directory.
+
+## Results
+
+`results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
+
+The modeled slot has `C = max(1, min(16, N // 4096))` committees with `K = N / (32 * C)` signatures each. It assumes agreeing votes and full participation. Each case starts a fresh sidecar, builds and verifies one proof per committee, and reproves the first committee for the timed samples. A multi-committee case recursively merges the original children and checks the complete claim union on every merge. A one-committee case reuses its proof. The benchmark also checks that a changed message invalidates the first child and, when present, the merged proof.
+
+Timed requests include Python request construction and local Unix-socket transport. Initial and warmed timings are both recorded. The sidecar performs its own internal initialization and warm-up before accepting the initial request. Fixture generation, signing, networking, consensus state work, and node scheduling are outside the timed intervals.
+
+The generator makes one-leaf XMSS keys using public deterministic seeds. Each signature has the full 2,404-byte wire layout and both layers of verification work. Unused subtrees are opaque commitments, so only the selected leaf is signable. The fixture generator checks each new signature with the pinned upstream verifier and rejects a mutated message. **Use these fixtures only for benchmarks.** They do not measure production key generation or signing.
+
+The [historical macOS M3 Max baseline](baseline/results.md) contains the original 11-case sweep, raw timings, and fixture hashes. Its binaries were built for the M3 Max directly. The container uses fixed CPU features, and its Linux prover can select different code paths. Keep those differences visible when comparing runs. The historical two largest cases each combine two complete five-sample series.
+
+## Build
+
+```sh
+git clone https://github.com/ethDreamer/pq-aggregation-bench.git
+cd pq-aggregation-bench
+./scripts/build-image.sh --load
+```
+
+Set `LEANVM_REV` to a full SHA or an upstream branch or tag. The helper resolves it to an exact SHA before building, and the build checks out that commit once for both binaries. It copies the WOTS implementation from that checkout and uses its XMSS and Keccak crates for fixture generation. The sidecar uses the upstream lockfile. The fixture lock starts with the same upstream dependencies, and the build saves both lockfile hashes and the WOTS source hash.
+
+```sh
+LEANVM_REV=refs/heads/my-upstream-branch ./scripts/build-image.sh --load
+```
+
+The helper emits `leanvm-<12-character-sha>` and `leanvm-<12-character-sha>-bench-<12-character-harness-sha>` tags. With a registry login, authorized repository, and a two-platform Buildx builder, use `IMAGE=your-registry/your-repo ./scripts/build-image.sh --push` to publish one index for Linux AMD64 and ARM64. Use the registry digest when you need an immutable image reference. The build labels store the full SHAs. `RUST_IMAGE` can override the Rust base if a newer revision needs a different toolchain.
+
+Future revisions must support the experimental prover feature, sidecar wire v1, the rate-2 request, and the XMSS layout and helpers used here. A revision that changes these interfaces requires an update to the harness. Run `./scripts/smoke.sh IMAGE` after changing the pin. GitHub Actions runs the smoke on native AMD64 and ARM64 runners.
+
+Linux AMD64 uses SSSE3 and PCLMULQDQ. Linux ARM64 uses the ARMv8 AES/PMULL extension and jemalloc configured to support kernels with up to 64 KiB pages. These match the published devnet build flags and work on compatible CPUs without inheriting the builder’s CPU features. Host-tuned builds can select different prover kernels and should be reported separately.
+
+The benchmark is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). leanVM and its WOTS code retain their upstream license.

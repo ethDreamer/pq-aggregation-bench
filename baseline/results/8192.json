@@ -1,0 +1,92 @@
+{
+  "active_validators": 8192,
+  "committees_per_slot": 2,
+  "signatures_per_committee": 128,
+  "signatures_per_slot": 256,
+  "selected_proofs": 2,
+  "merge_operations": 1,
+  "prover_pin": "283686575c4e81790591d2c6e3ed21c69c0e3bbe",
+  "prover": "experimental",
+  "log_inv_rate": 2,
+  "prover_threads": 16,
+  "fixture_mode": "distinct one-leaf sparse XMSS keys; full-depth signatures; same message",
+  "fixture_sha256": "9bb6b8c47d4386d4a95524df3859dc4c184b7520920d0d408d99b8bd3d97b57f",
+  "fixture_preparation_seconds": 1.648086249944754,
+  "repetitions": 5,
+  "utc_start": "2026-11-20T16:53:18Z",
+  "host": {
+    "os": "macOS-14.1.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "logical_cpus": 16
+  },
+  "load_before": [
+    2.95703125,
+    3.556640625,
+    3.7685546875
+  ],
+  "sidecar_sha256": "5493071bc7012604d0b39b4686327e4f237879ba9e5e16d72cd9f9bd2f05ee35",
+  "committee_prove": {
+    "samples_ms": [
+      113.845125,
+      116.630166,
+      114.34325,
+      115.318,
+      129.18725
+    ],
+    "median_ms": 115.318,
+    "min_ms": 113.845125,
+    "max_ms": 129.18725
+  },
+  "committee_verify": {
+    "samples_ms": [
+      7.661833,
+      7.4905,
+      7.725958,
+      7.505875,
+      7.947709
+    ],
+    "median_ms": 7.661833,
+    "min_ms": 7.4905,
+    "max_ms": 7.947709
+  },
+  "committee_proof_bytes": 175320,
+  "initial_child_prove_ms": [
+    115.478291,
+    191.83425
+  ],
+  "child_proof_bytes_total": 351200,
+  "first_merge_ms": 165.839083,
+  "proposer_merge": {
+    "samples_ms": [
+      160.023125,
+      168.345125,
+      159.654375,
+      225.86075,
+      160.493792
+    ],
+    "median_ms": 160.493792,
+    "min_ms": 159.654375,
+    "max_ms": 225.86075
+  },
+  "final_verify": {
+    "samples_ms": [
+      11.7925,
+      11.730167,
+      11.36425,
+      12.321584,
+      11.434334
+    ],
+    "median_ms": 11.730167,
+    "min_ms": 11.36425,
+    "max_ms": 12.321584
+  },
+  "final_proof_bytes": 190984,
+  "all_proofs_verified": true,
+  "wrong_message_rejected": true,
+  "load_after": [
+    4.48193359375,
+    3.86279296875,
+    3.875
+  ],
+  "utc_end": "2026-11-20T16:53:22Z"
+}

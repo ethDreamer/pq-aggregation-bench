@@ -1,0 +1,106 @@
+{
+  "active_validators": 65536,
+  "committees_per_slot": 16,
+  "signatures_per_committee": 128,
+  "signatures_per_slot": 2048,
+  "selected_proofs": 16,
+  "merge_operations": 1,
+  "prover_pin": "283686575c4e81790591d2c6e3ed21c69c0e3bbe",
+  "prover": "experimental",
+  "log_inv_rate": 2,
+  "prover_threads": 16,
+  "fixture_mode": "distinct one-leaf sparse XMSS keys; full-depth signatures; same message",
+  "fixture_sha256": "e44fb986e238257fd339e93d2c456e52def78f3f6365ac44102f94eb058ff505",
+  "fixture_preparation_seconds": 17.965164416935295,
+  "repetitions": 5,
+  "utc_start": "2026-11-20T16:54:04Z",
+  "host": {
+    "os": "macOS-14.1.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "logical_cpus": 16
+  },
+  "load_before": [
+    8.67333984375,
+    4.95849609375,
+    4.27099609375
+  ],
+  "sidecar_sha256": "5493071bc7012604d0b39b4686327e4f237879ba9e5e16d72cd9f9bd2f05ee35",
+  "committee_prove": {
+    "samples_ms": [
+      138.253958,
+      141.750084,
+      129.30075,
+      136.351167,
+      188.71375
+    ],
+    "median_ms": 138.253958,
+    "min_ms": 129.30075,
+    "max_ms": 188.71375
+  },
+  "committee_verify": {
+    "samples_ms": [
+      8.578667,
+      8.00075,
+      7.584167,
+      8.725416,
+      8.573834
+    ],
+    "median_ms": 8.573834,
+    "min_ms": 7.584167,
+    "max_ms": 8.725416
+  },
+  "committee_proof_bytes": 175320,
+  "initial_child_prove_ms": [
+    122.822625,
+    128.332917,
+    127.045042,
+    129.497917,
+    132.157875,
+    122.973583,
+    149.850958,
+    214.678584,
+    135.843208,
+    126.930291,
+    129.555833,
+    125.762333,
+    133.377875,
+    216.869792,
+    138.196083,
+    127.886125
+  ],
+  "child_proof_bytes_total": 2821104,
+  "first_merge_ms": 1608.451375,
+  "proposer_merge": {
+    "samples_ms": [
+      1261.778583,
+      1239.478166,
+      1218.875709,
+      1329.403792,
+      1228.85675
+    ],
+    "median_ms": 1239.478166,
+    "min_ms": 1218.875709,
+    "max_ms": 1329.403792
+  },
+  "final_verify": {
+    "samples_ms": [
+      13.416709,
+      13.448167,
+      14.826125,
+      14.395334,
+      14.823375
+    ],
+    "median_ms": 14.395334,
+    "min_ms": 13.416709,
+    "max_ms": 14.826125
+  },
+  "final_proof_bytes": 206892,
+  "all_proofs_verified": true,
+  "wrong_message_rejected": true,
+  "load_after": [
+    10.59130859375,
+    5.56396484375,
+    4.498046875
+  ],
+  "utc_end": "2026-11-20T16:54:17Z"
+}

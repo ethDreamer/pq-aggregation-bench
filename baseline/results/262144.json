@@ -1,0 +1,106 @@
+{
+  "active_validators": 262144,
+  "committees_per_slot": 16,
+  "signatures_per_committee": 512,
+  "signatures_per_slot": 8192,
+  "selected_proofs": 16,
+  "merge_operations": 1,
+  "prover_pin": "283686575c4e81790591d2c6e3ed21c69c0e3bbe",
+  "prover": "experimental",
+  "log_inv_rate": 2,
+  "prover_threads": 16,
+  "fixture_mode": "distinct one-leaf sparse XMSS keys; full-depth signatures; same message",
+  "fixture_sha256": "c6ce20809a2889e488659c189a69697e8ceb0644d524da0cd9bb48b7e8ece939",
+  "fixture_preparation_seconds": 67.9173394999234,
+  "repetitions": 5,
+  "utc_start": "2026-11-20T16:56:17Z",
+  "host": {
+    "os": "macOS-14.1.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "logical_cpus": 16
+  },
+  "load_before": [
+    13.44384765625,
+    8.263671875,
+    5.70556640625
+  ],
+  "sidecar_sha256": "5493071bc7012604d0b39b4686327e4f237879ba9e5e16d72cd9f9bd2f05ee35",
+  "committee_prove": {
+    "samples_ms": [
+      477.747833,
+      559.186583,
+      488.950833,
+      538.688917,
+      500.346834
+    ],
+    "median_ms": 500.346834,
+    "min_ms": 477.747833,
+    "max_ms": 559.186583
+  },
+  "committee_verify": {
+    "samples_ms": [
+      10.364583,
+      10.35975,
+      10.407959,
+      10.578792,
+      9.832166
+    ],
+    "median_ms": 10.364583,
+    "min_ms": 9.832166,
+    "max_ms": 10.578792
+  },
+  "committee_proof_bytes": 197364,
+  "initial_child_prove_ms": [
+    579.295292,
+    509.552334,
+    489.579541,
+    522.14825,
+    475.905667,
+    521.567041,
+    616.148792,
+    494.012792,
+    584.179,
+    467.539291,
+    547.768667,
+    468.036125,
+    551.734042,
+    455.733291,
+    552.858333,
+    457.444584
+  ],
+  "child_proof_bytes_total": 3163512,
+  "first_merge_ms": 1605.637166,
+  "proposer_merge": {
+    "samples_ms": [
+      1520.031709,
+      1573.067708,
+      1619.312625,
+      1516.151417,
+      1591.944541
+    ],
+    "median_ms": 1573.067708,
+    "min_ms": 1516.151417,
+    "max_ms": 1619.312625
+  },
+  "final_verify": {
+    "samples_ms": [
+      17.839167,
+      17.146083,
+      16.21025,
+      17.515834,
+      16.775375
+    ],
+    "median_ms": 17.146083,
+    "min_ms": 16.21025,
+    "max_ms": 17.839167
+  },
+  "final_proof_bytes": 220644,
+  "all_proofs_verified": true,
+  "wrong_message_rejected": true,
+  "load_after": [
+    13.705078125,
+    8.6650390625,
+    5.908203125
+  ],
+  "utc_end": "2026-11-20T16:56:39Z"
+}

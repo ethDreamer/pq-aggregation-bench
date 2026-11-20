@@ -1,0 +1,12 @@
+**
+!generator/
+!generator/Cargo.toml
+!generator/src/
+!generator/src/main.rs
+!scripts/
+!scripts/build-binaries.sh
+!run.py
+!environment.py
+!report.py
+!LICENSE-APACHE
+!LICENSE-MIT

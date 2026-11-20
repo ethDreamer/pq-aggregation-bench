@@ -1,0 +1,106 @@
+{
+  "active_validators": 524288,
+  "committees_per_slot": 16,
+  "signatures_per_committee": 1024,
+  "signatures_per_slot": 16384,
+  "selected_proofs": 16,
+  "merge_operations": 1,
+  "prover_pin": "283686575c4e81790591d2c6e3ed21c69c0e3bbe",
+  "prover": "experimental",
+  "log_inv_rate": 2,
+  "prover_threads": 16,
+  "fixture_mode": "distinct one-leaf sparse XMSS keys; full-depth signatures; same message",
+  "fixture_sha256": "249c5e1d5ea4b0cb2b62ded909657f7e5be155734736bdb7507d56c146037475",
+  "fixture_preparation_seconds": 154.6841074170079,
+  "repetitions": 5,
+  "utc_start": "2026-11-20T16:59:14Z",
+  "host": {
+    "os": "macOS-14.1.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "logical_cpus": 16
+  },
+  "load_before": [
+    15.50048828125,
+    11.36376953125,
+    7.46728515625
+  ],
+  "sidecar_sha256": "5493071bc7012604d0b39b4686327e4f237879ba9e5e16d72cd9f9bd2f05ee35",
+  "committee_prove": {
+    "samples_ms": [
+      1442.616916,
+      1625.667875,
+      1385.614542,
+      1452.622959,
+      1477.99
+    ],
+    "median_ms": 1452.622959,
+    "min_ms": 1385.614542,
+    "max_ms": 1625.667875
+  },
+  "committee_verify": {
+    "samples_ms": [
+      14.65275,
+      14.335167,
+      15.110584,
+      12.788875,
+      15.115375
+    ],
+    "median_ms": 14.65275,
+    "min_ms": 12.788875,
+    "max_ms": 15.115375
+  },
+  "committee_proof_bytes": 205500,
+  "initial_child_prove_ms": [
+    1519.134083,
+    1422.664209,
+    1426.961834,
+    1430.88275,
+    1412.781125,
+    1327.713042,
+    1465.631959,
+    1440.040958,
+    1398.729042,
+    1409.956083,
+    1322.50525,
+    1413.263833,
+    1319.864292,
+    1420.420459,
+    1437.998083,
+    1395.090792
+  ],
+  "child_proof_bytes_total": 3284064,
+  "first_merge_ms": 2642.503917,
+  "proposer_merge": {
+    "samples_ms": [
+      2257.065791,
+      2336.708167,
+      2424.493792,
+      2456.8045,
+      2259.226333
+    ],
+    "median_ms": 2336.708167,
+    "min_ms": 2257.065791,
+    "max_ms": 2456.8045
+  },
+  "final_verify": {
+    "samples_ms": [
+      27.784875,
+      24.036708,
+      25.353791,
+      22.9315,
+      24.165709
+    ],
+    "median_ms": 24.165709,
+    "min_ms": 22.9315,
+    "max_ms": 27.784875
+  },
+  "final_proof_bytes": 219908,
+  "all_proofs_verified": true,
+  "wrong_message_rejected": true,
+  "load_after": [
+    14.6552734375,
+    11.86767578125,
+    7.880859375
+  ],
+  "utc_end": "2026-11-20T17:00:01Z"
+}

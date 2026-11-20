@@ -1,0 +1,79 @@
+{
+  "active_validators": 4096,
+  "committees_per_slot": 1,
+  "signatures_per_committee": 128,
+  "signatures_per_slot": 128,
+  "selected_proofs": 1,
+  "merge_operations": 0,
+  "prover_pin": "283686575c4e81790591d2c6e3ed21c69c0e3bbe",
+  "prover": "experimental",
+  "log_inv_rate": 2,
+  "prover_threads": 16,
+  "fixture_mode": "distinct one-leaf sparse XMSS keys; full-depth signatures; same message",
+  "fixture_sha256": "448a1a1d8e5e8d84ed0053db89cdf6e323915b7d3ea9558ddbf488a103d2ae8d",
+  "fixture_preparation_seconds": 0.005730249918997288,
+  "repetitions": 5,
+  "utc_start": "2026-11-20T16:52:44Z",
+  "host": {
+    "os": "macOS-14.1.1-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "logical_cpus": 16
+  },
+  "load_before": [
+    2.994140625,
+    3.6162109375,
+    3.796875
+  ],
+  "sidecar_sha256": "5493071bc7012604d0b39b4686327e4f237879ba9e5e16d72cd9f9bd2f05ee35",
+  "committee_prove": {
+    "samples_ms": [
+      114.69925,
+      115.180916,
+      114.399875,
+      113.229042,
+      135.040625
+    ],
+    "median_ms": 114.69925,
+    "min_ms": 113.229042,
+    "max_ms": 135.040625
+  },
+  "committee_verify": {
+    "samples_ms": [
+      7.747917,
+      7.518583,
+      7.714,
+      7.56775,
+      7.810917
+    ],
+    "median_ms": 7.714,
+    "min_ms": 7.518583,
+    "max_ms": 7.810917
+  },
+  "committee_proof_bytes": 175320,
+  "initial_child_prove_ms": [
+    128.468791
+  ],
+  "child_proof_bytes_total": 175320,
+  "proposer_merge": null,
+  "final_verify": {
+    "samples_ms": [
+      7.747917,
+      7.518583,
+      7.714,
+      7.56775,
+      7.810917
+    ],
+    "median_ms": 7.714,
+    "min_ms": 7.518583,
+    "max_ms": 7.810917
+  },
+  "final_proof_bytes": 175320,
+  "all_proofs_verified": true,
+  "wrong_message_rejected": true,
+  "load_after": [
+    3.5546875,
+    3.72216796875,
+    3.8330078125
+  ],
+  "utc_end": "2026-11-20T16:52:47Z"
+}
