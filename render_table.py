@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Print the mean ± sample standard deviation table for completed benchmark cases."""
+
+import argparse
+import json
+from pathlib import Path
+
+from report import belongs_to_run, mean_stdev_markdown, measured_rows, warmed_timings
+
+
+def read_saved_run(path):
+    if path.is_dir():
+        manifest_path = path / "run.json"
+        summary_path = path / "summary.json"
+        if manifest_path.is_file() and ((path / "cases").is_dir() or not summary_path.is_file()):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            return manifest, measured_rows(path, manifest)
+        path = summary_path
+
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    manifest = summary["run"]
+    sizes = manifest["settings"]["sizes"]
+    rows_by_size = {}
+    for row in summary["cases"]:
+        size = row["active_validators"]
+        if size not in sizes or size in rows_by_size or not belongs_to_run(row, manifest, size):
+            raise ValueError(f"Summary contains an invalid completed case for {size} validators")
+        rows_by_size[size] = row
+    return manifest, [rows_by_size[size] for size in sizes if size in rows_by_size]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, help="saved run directory or its summary.json")
+    args = parser.parse_args()
+    try:
+        manifest, rows = read_saved_run(args.results)
+        print(mean_stdev_markdown(manifest, warmed_timings(rows)), end="")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.exit(1, f"Unable to render timing table: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

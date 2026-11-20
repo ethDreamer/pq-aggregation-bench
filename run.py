@@ -444,7 +444,9 @@ def main():
                 save_json(case_directory / f"{size}.json", result)
                 rows = measured_rows(args.output, manifest)
                 write_report(args.output, manifest, rows)
-            print(f"Report written to {args.output / 'results.md'}", flush=True)
+            print(f"Reports written to {args.output}", flush=True)
+            table = (args.output / "results-mean-stdev.md").read_text(encoding="utf-8")
+            print(table, end="", flush=True)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Benchmark failed: {error}\n")
 

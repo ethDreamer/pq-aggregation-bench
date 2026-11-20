@@ -36,18 +36,27 @@ if [[ $variant == bundled ]]; then
         exit 1
     fi
 fi
-docker run "${args[@]}" "$image" "${run[@]}" --resume
+docker run "${args[@]}" "$image" "${run[@]}" --resume | tee "$smoke_dir/resume.log"
 if docker run "${args[@]}" "$image" "${run[@]}" --threads 1 --resume; then
     echo "Accepted a run with changed prover thread count" >&2
     exit 1
 fi
 
-python3 - "$smoke_dir/results/summary.json" "$execution" "$variant" <<'PY'
+python3 - "$smoke_dir/results/summary.json" "$execution" "$variant" "$smoke_dir" <<'PY'
+import csv
 import json
 from pathlib import Path
+from math import sqrt
+import subprocess
 import sys
 
-summary = json.loads(Path(sys.argv[1]).read_text())
+from report import timing_statistics
+
+assert timing_statistics({"samples_ms": [1, 3]}) == (2, sqrt(2), 2)
+assert timing_statistics({"samples_ms": []}) == (None, None, 0)
+
+summary_path = Path(sys.argv[1])
+summary = json.loads(summary_path.read_text())
 build, hardware, settings = (summary["run"][key] for key in ("build", "hardware", "settings"))
 assert hardware["cpu_quota_cores"] == 2.5
 assert hardware["memory_cgroup_limit_bytes"] == 3 * 2**30
@@ -69,5 +78,20 @@ for row in (single, merge):
     if build["leanvm_revision"] == "283686575c4e81790591d2c6e3ed21c69c0e3bbe":
         original = json.loads(Path(f"baseline/results/{row['active_validators']}.json").read_text())
         assert row["fixture_sha256"] == original["fixture_sha256"]
-print("Verified proofs, claim unions, negative checks, runtime limits and resume")
+with summary_path.with_name("results-mean-stdev.csv").open(newline="") as file:
+    single_report, merge_report = csv.DictReader(file)
+assert single_report["merge_operations"] == "0" and single_report["proposer_merge_n"] == "0"
+assert single_report["proposer_merge_mean_ms"] == single_report["proposer_merge_sample_stdev_ms"] == ""
+for row, raw in zip((single_report, merge_report), summary["cases"]):
+    assert row["committee_prove_n"] == "1" and row["committee_prove_sample_stdev_ms"] == ""
+    assert float(row["committee_prove_mean_ms"]) == raw["committee_prove"]["samples_ms"][0]
+    assert row["committee_verify_n"] == row["final_verify_n"] == "1"
+assert merge_report["proposer_merge_n"] == "1" and merge_report["proposer_merge_sample_stdev_ms"] == ""
+table = summary_path.with_name("results-mean-stdev.md").read_text()
+assert "Reuse" in table
+standalone = subprocess.check_output([sys.executable, "render_table.py", str(summary_path)], text=True)
+assert table == standalone
+for log in ("run.log", "resume.log"):
+    assert (Path(sys.argv[4]) / log).read_text().endswith(table)
+print("Verified proofs, claim unions, negative checks, runtime limits, resume and timing reports")
 PY

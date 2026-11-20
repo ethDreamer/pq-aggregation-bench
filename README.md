@@ -38,6 +38,33 @@ Each output directory holds one run. Repeat the command with `--resume` to skip 
 
 `results.md` and `results.csv` present the measured rows. `summary.json` includes all samples and run metadata. `cases/` holds per-case JSON and sidecar logs. The report records runtime-visible CPU model or ARM identifiers, logical CPUs, CPU affinity, effective cgroup CPU quota, visible memory and cgroup memory limit, OS and kernel, runtime architecture, build flags, both source revisions, and SHA-256 of both binaries. Bundled runs also record the complete bundle digest and the exact fixture-prefix hash for each case. Docker Desktop reports its Linux VM’s resources. Use `--host-cpu-model` if you want to add the physical host model, and report the VM mode when comparing results across machines.
 
+`results-mean-stdev.md` gives the slot geometry, warmed committee proving, recursive merging and final verification as mean ± sample standard deviation in milliseconds. A second table gives committee verification and sample counts for all four operations. The standard deviation uses n − 1, with a dash when there are fewer than two samples. Single-committee cases show **Reuse** and have no merge samples. `results-mean-stdev.csv` provides separate numeric mean, sample standard deviation and count columns with blanks for unavailable means or deviations. Initial requests, medians, and individual timings remain in the original reports and raw results. The report updates as cases finish. The container prints the same Markdown table at the end of a successful run or resume.
+
+Print the timing tables from a saved run directory or its `summary.json`. This command uses Python 3's standard library, reads the existing samples, and leaves the input untouched.
+
+```sh
+python3 render_table.py /path/to/saved-run > timings.md
+python3 render_table.py /path/to/saved-run/summary.json
+```
+
+To regenerate the CSV and all other reports as well, use the report command. Omit `--output` to write beside the saved results, or give a separate directory to keep the source read-only.
+
+```sh
+python3 report.py /path/to/saved-run --output /path/to/reports
+```
+
+Either image can also regenerate the report with the saved run mounted read-only.
+
+```sh
+mkdir -p reports
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/saved-run:/source:ro" -v "$PWD/reports:/results" \
+  --entrypoint python3 ethdreamer/pq-aggregation-bench:leanvm-283686575c4e \
+  /opt/pq-bench/report.py /source --output /results
+```
+
+Resume a benchmark with the exact image digest or benchmark-revision tag you started with.
+
 The modeled slot has `C = max(1, min(16, N // 4096))` committees with `K = N / (32 * C)` signatures each. It assumes agreeing votes and full participation. Each case starts a fresh sidecar, builds and verifies one proof per committee, and reproves the first committee for the timed samples. A multi-committee case recursively merges the original children and checks the complete claim union on every merge. A one-committee case reuses its proof. The benchmark also checks that a changed message invalidates the first child and, when present, the merged proof.
 
 Timed requests include Python request construction and local Unix-socket transport. Initial and warmed timings are both recorded. The sidecar performs its own internal initialization and warm-up before accepting the initial request. Fixture generation, signing, networking, consensus state work, and node scheduling are outside the timed intervals.

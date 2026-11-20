@@ -4,6 +4,13 @@ import csv
 import io
 import json
 from pathlib import Path
+from statistics import fmean, stdev
+
+GEOMETRY_FIELDS = (
+    "active_validators", "committees_per_slot", "signatures_per_committee",
+    "signatures_per_slot", "merge_operations",
+)
+WARMED_OPERATIONS = ("committee_prove", "proposer_merge", "final_verify", "committee_verify")
 
 
 def save_text(path, text):
@@ -16,6 +23,14 @@ def save_json(path, value):
     save_text(path, json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
+def belongs_to_run(row, manifest, size):
+    return (
+        row.get("run_id") == manifest["run_id"]
+        and row.get("active_validators") == size
+        and row.get("all_proofs_verified") is True
+    )
+
+
 def measured_rows(directory, manifest):
     rows = []
     for size in manifest["settings"]["sizes"]:
@@ -23,14 +38,134 @@ def measured_rows(directory, manifest):
         if not path.exists():
             continue
         row = json.loads(path.read_text(encoding="utf-8"))
-        if (
-            row.get("run_id") != manifest["run_id"]
-            or row.get("active_validators") != size
-            or row.get("all_proofs_verified") is not True
-        ):
+        if not belongs_to_run(row, manifest, size):
             raise ValueError(f"Case does not belong to this completed run: {path}")
         rows.append(row)
     return rows
+
+
+def write_csv(path, columns, rows):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(columns)
+    writer.writerows(rows)
+    save_text(path, buffer.getvalue())
+
+
+def timing_statistics(timing):
+    samples = timing["samples_ms"] if timing is not None else ()
+    n = len(samples)
+    return fmean(samples) if n else None, stdev(samples) if n > 1 else None, n
+
+
+def format_timing(timing):
+    mean, sample_sd, _ = timing
+    if mean is None:
+        return "—"
+    spread = f"{sample_sd:,.1f}" if sample_sd is not None else "—"
+    return f"{mean:,.1f} ± {spread}"
+
+
+def markdown_table(columns, rows):
+    yield "| " + " | ".join(columns) + " |"
+    yield "| " + " | ".join(["---:"] * len(columns)) + " |"
+    for row in rows:
+        yield "| " + " | ".join(f"{value:,}" if isinstance(value, int) else value for value in row) + " |"
+
+
+def warmed_timings(rows):
+    return [
+        (
+            tuple(row[field] for field in GEOMETRY_FIELDS),
+            tuple(timing_statistics(row[operation]) for operation in WARMED_OPERATIONS),
+        )
+        for row in rows
+    ]
+
+
+def mean_stdev_markdown(manifest, data):
+    primary, details = [], []
+    for slot, timing in data:
+        active_validators, _, _, _, merge_jobs = slot
+        prove, merge, final_verify, committee_verify = timing
+        primary.append((
+            *slot, format_timing(prove), format_timing(merge) if merge_jobs else "Reuse",
+            format_timing(final_verify),
+        ))
+        details.append((
+            active_validators, format_timing(committee_verify),
+            prove[2], committee_verify[2], merge[2], final_verify[2],
+        ))
+
+    hardware, build, settings = (manifest[key] for key in ("hardware", "build", "settings"))
+    models = ", ".join(hardware.get("cpu_models") or []) or "unknown"
+    architecture = hardware.get("architecture") or "unknown architecture"
+    execution = settings.get("execution") or "unknown"
+    system = hardware.get("os_release") or hardware.get("os") or "unknown"
+    visible = hardware.get("logical_cpus_visible")
+    capacity = hardware.get("effective_cpu_capacity")
+    allocation = f"{capacity:g} CPU equivalents" if capacity is not None else "unknown"
+    threads = settings.get("prover_threads") or "unknown"
+    memory = hardware.get("memory_visible_bytes")
+    ram = f"{memory / 2**30:.1f} GiB" if memory is not None else "unknown"
+    limit = hardware.get("memory_cgroup_limit_bytes")
+    limit_text = f" Container memory limit {limit / 2**30:.1f} GiB." if limit is not None else ""
+    pin = (build.get("leanvm_revision") or "unknown")[:12]
+    sample_counts = ", ".join(str(n) for n in sorted({
+        n for _, timings in data for _, _, n in timings if n
+    }))
+
+    lines = [
+        "# PQ aggregation benchmark timing statistics",
+        "",
+        f"- Runtime CPU {models} ({architecture}, {execution} execution). Runtime OS {system}.",
+        f"- {visible if visible is not None else 'Unknown number of'} visible logical CPUs. "
+        f"Effective CPU allocation {allocation}. Prover threads {threads}.",
+        f"- Runtime-visible RAM {ram}.{limit_text}",
+        f"- leanVM `{pin}`. Completed {len(data)}/{len(settings['sizes'])} cases.",
+    ]
+    if settings.get("host_cpu_model"):
+        lines.append(f"- Operator reports a physical host CPU of {settings['host_cpu_model']}.")
+    if sample_counts:
+        lines.append(f"- Warmed samples per measured operation (n) {sample_counts}.")
+    lines.extend([
+        "",
+        "Timings are arithmetic mean ± sample standard deviation in milliseconds. "
+        "The standard deviation uses n − 1 in the denominator. "
+        "Both tables use warmed samples and exclude initial requests.",
+        "Single-committee cases show **Reuse** and have zero merge jobs. "
+        "A dash marks a missing timing or a standard deviation with fewer than two samples.",
+        "",
+        *markdown_table([
+            "Active validators", "Committees / slot", "Signatures / committee", "Signatures / slot",
+            "Merge jobs", "Prove one committee (ms)", "Merge (ms)", "Verify final (ms)",
+        ], primary),
+        "",
+        "## Committee verification and sample counts",
+        "",
+        *markdown_table([
+            "Active validators", "Verify one committee (ms)", "Committee prove n",
+            "Committee verify n", "Merge n", "Final verify n",
+        ], details),
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def write_mean_stdev_report(directory, manifest, rows):
+    data = warmed_timings(rows)
+    save_text(directory / "results-mean-stdev.md", mean_stdev_markdown(manifest, data))
+
+    timing_columns = (
+        f"{operation}_{statistic}"
+        for operation in WARMED_OPERATIONS
+        for statistic in ("mean_ms", "sample_stdev_ms", "n")
+    )
+    numeric = (
+        (*slot, *(value for operation in timing for value in operation))
+        for slot, timing in data
+    )
+    write_csv(directory / "results-mean-stdev.csv", (*GEOMETRY_FIELDS, *timing_columns), numeric)
 
 
 def write_report(directory, manifest, rows):
@@ -60,11 +195,8 @@ def write_report(directory, manifest, rows):
             len(row["committee_prove"]["samples_ms"]),
         ])
 
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(columns)
-    writer.writerows(table)
-    save_text(directory / "results.csv", buffer.getvalue())
+    write_csv(directory / "results.csv", columns, table)
+    write_mean_stdev_report(directory, manifest, rows)
 
     hardware, build, settings = (manifest[key] for key in ("hardware", "build", "settings"))
     cpu_models = ", ".join(hardware["cpu_models"]) or "Unknown"
@@ -133,7 +265,14 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("run_directory", type=Path)
+    parser.add_argument("run_directory", type=Path, help="existing run with run.json and cases/")
+    parser.add_argument("--output", type=Path, help="write reports here (default: run directory)")
     args = parser.parse_args()
-    run = json.loads((args.run_directory / "run.json").read_text(encoding="utf-8"))
-    write_report(args.run_directory, run, measured_rows(args.run_directory, run))
+    try:
+        run = json.loads((args.run_directory / "run.json").read_text(encoding="utf-8"))
+        rows = measured_rows(args.run_directory, run)
+        output = args.output or args.run_directory
+        output.mkdir(parents=True, exist_ok=True)
+        write_report(output, run, rows)
+    except (OSError, ValueError, KeyError) as error:
+        parser.exit(1, f"Report failed: {error}\n")
