@@ -99,8 +99,10 @@ def cgroup_limits():
     return min(quotas, default=None), min(memory, default=None)
 
 
-def linux_cpu_models():
+def linux_cpu_information(affinity):
     models = set()
+    flags_by_cpu = {}
+    allowed = set(affinity) if affinity is not None else None
     cpuinfo = read("/proc/cpuinfo") or ""
     for entry in cpuinfo.split("\n\n"):
         fields = {}
@@ -111,9 +113,15 @@ def linux_cpu_models():
         model = fields.get("model name") or fields.get("Hardware")
         if not model and fields.get("CPU implementer") and fields.get("CPU part"):
             model = f"ARM implementer {fields['CPU implementer']}, part {fields['CPU part']}"
-        if model:
-            models.add(model)
-    return sorted(models)
+        cpu = fields.get("processor", "")
+        if cpu.isdecimal() and (allowed is None or int(cpu) in allowed):
+            flags_by_cpu[int(cpu)] = set(fields.get("flags", fields.get("Features", "")).split())
+            if model:
+                models.add(model)
+
+    enough_cpus = flags_by_cpu and (allowed is None or flags_by_cpu.keys() == allowed)
+    flags = set.intersection(*flags_by_cpu.values()) if enough_cpus else set()
+    return sorted(models), sorted(flags)
 
 
 def hardware():
@@ -129,12 +137,13 @@ def hardware():
         quota if quota is not None else math.inf,
     )
 
+    cpu_flags = []
     if system == "Linux":
         memory_match = re.search(r"^MemTotal:\s+(\d+) kB", read("/proc/meminfo") or "", re.M)
         memory = int(memory_match[1]) * 1024 if memory_match else None
         distro_match = re.search(r"^PRETTY_NAME=(.*)$", read("/etc/os-release") or "", re.M)
         os_release = distro_match[1].strip('"') if distro_match else None
-        models = linux_cpu_models()
+        models, cpu_flags = linux_cpu_information(affinity)
     elif system == "Darwin":
         memory = number(sysctl("hw.memsize"))
         os_release = platform.mac_ver()[0]
@@ -150,6 +159,7 @@ def hardware():
         "architecture": platform.machine(),
         "page_size_bytes": os.sysconf("SC_PAGE_SIZE"),
         "cpu_models": models,
+        "cpu_flags": cpu_flags,
         "logical_cpus_visible": logical_cpus,
         "cpu_affinity": affinity,
         "cpu_quota_cores": quota,

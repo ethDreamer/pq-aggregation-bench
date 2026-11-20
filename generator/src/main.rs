@@ -1,7 +1,7 @@
 use lean_xmss::internals::*;
 use lean_xmss::{LeafIndex, LeanXmssPublicKey, LeanXmssSignature, verify};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 mod upstream_wots;
@@ -11,6 +11,9 @@ const ZERO_DIGITS: usize = 6;
 const MAX_RANDOMIZER_TRIALS: u64 = 1 << 32;
 const TWEAK_PRF: u8 = 0;
 const TWEAK_RANDOMIZER: u8 = 7;
+const SIGNATURE_BYTES: usize = 2404;
+const RECORD_BYTES: usize = 32 + 32 + SIGNATURE_BYTES;
+const MAX_RECORDS: usize = 32768;
 
 // Helpers used by the unmodified upstream WOTS signer (private in its crate).
 fn th_digests(pp: &PublicParam, tw: &Tweak, values: &[Digest]) -> Digest {
@@ -75,7 +78,7 @@ fn fixture(seed: &[u8; 32], message: &[u8; 32], leaf: u32) -> Result<Vec<u8>, St
     let mut pk_bytes = [0; 32];
     pk_bytes[..N].copy_from_slice(&top_root);
     pk_bytes[N..].copy_from_slice(&pp);
-    let mut signature = Vec::with_capacity(2404);
+    let mut signature = Vec::with_capacity(SIGNATURE_BYTES);
     signature.extend_from_slice(&leaf.to_le_bytes());
     for (layer, index, signed, path) in [
         (0, leaf, message.as_slice(), &bottom_path),
@@ -88,12 +91,25 @@ fn fixture(seed: &[u8; 32], message: &[u8; 32], leaf: u32) -> Result<Vec<u8>, St
         signature.extend_from_slice(values.as_flattened());
         signature.extend_from_slice(path.as_flattened());
     }
-    let pk = LeanXmssPublicKey::from_bytes(&pk_bytes);
-    let sig_array: [u8; 2404] = signature
+    let sig_bytes = signature
         .as_slice()
         .try_into()
         .map_err(|_| "wrong signature size")?;
-    let sig = LeanXmssSignature::from_bytes(&sig_array);
+    check_signature(&pk_bytes, message, sig_bytes)?;
+    let mut result = Vec::with_capacity(RECORD_BYTES);
+    result.extend_from_slice(&pk_bytes);
+    result.extend_from_slice(message);
+    result.extend_from_slice(&signature);
+    Ok(result)
+}
+
+fn check_signature(
+    key: &[u8; 32],
+    message: &[u8; 32],
+    signature: &[u8; SIGNATURE_BYTES],
+) -> Result<(), String> {
+    let pk = LeanXmssPublicKey::from_bytes(key);
+    let sig = LeanXmssSignature::from_bytes(signature);
     if !verify(&pk, message, &sig) {
         return Err("pinned verifier rejected sparse signature".into());
     }
@@ -102,15 +118,57 @@ fn fixture(seed: &[u8; 32], message: &[u8; 32], leaf: u32) -> Result<Vec<u8>, St
     if verify(&pk, &wrong_message, &sig) {
         return Err("wrong message accepted".into());
     }
-    let mut result = Vec::with_capacity(2468);
-    result.extend_from_slice(&pk_bytes);
-    result.extend_from_slice(message);
-    result.extend_from_slice(&signature);
-    Ok(result)
+    Ok(())
+}
+
+fn verify_pack(path: &Path, threads: usize) -> Result<(), String> {
+    let payload = fs::read(path).map_err(|e| e.to_string())?;
+    let count = payload.len() / RECORD_BYTES;
+    if threads == 0 || count == 0 || count > MAX_RECORDS || payload.len() % RECORD_BYTES != 0 {
+        return Err("invalid fixture pack size or thread count".into());
+    }
+    let records_per_worker = count.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = payload
+            .chunks(records_per_worker * RECORD_BYTES)
+            .enumerate()
+            .map(|(batch, bytes)| {
+                scope.spawn(move || {
+                    for (offset, record) in bytes.chunks_exact(RECORD_BYTES).enumerate() {
+                        let (header, signature) =
+                            record.split_at_checked(64).ok_or("wrong record size")?;
+                        let (key, message) =
+                            header.split_at_checked(32).ok_or("wrong header size")?;
+                        check_signature(
+                            key.try_into().map_err(|_| "wrong key size")?,
+                            message.try_into().map_err(|_| "wrong message size")?,
+                            signature.try_into().map_err(|_| "wrong signature size")?,
+                        )
+                        .map_err(|error| {
+                            let index = batch * records_per_worker + offset;
+                            format!("fixture {index}: {error}")
+                        })?;
+                    }
+                    Ok::<(), String>(())
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().map_err(|_| "fixture verifier panicked")??;
+        }
+        Ok::<(), String>(())
+    })?;
+    println!("Verified {count} fixtures and rejected {count} wrong messages");
+    Ok(())
 }
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
+    if let [_, option, path, threads] = args.as_slice()
+        && option == "--verify-pack"
+    {
+        return verify_pack(Path::new(path), threads.parse().map_err(|_| "bad threads")?);
+    }
     let directory = PathBuf::from(
         args.get(1)
             .ok_or("expected directory count threads messages")?,
@@ -130,7 +188,7 @@ fn main() -> Result<(), String> {
         .ok_or("missing messages")?
         .parse()
         .map_err(|_| "bad messages")?;
-    if threads == 0 || messages != 1 || count > 32768 {
+    if threads == 0 || messages != 1 || count > MAX_RECORDS {
         return Err("invalid bounds".into());
     }
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
@@ -149,7 +207,7 @@ fn main() -> Result<(), String> {
                     let path = directory.join(format!("key-{index:05}.bin"));
                     if path.exists() {
                         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-                        if bytes.len() != messages * 2468 {
+                        if bytes.len() != messages * RECORD_BYTES {
                             return Err(format!("wrong fixture length: {}", path.display()));
                         }
                     } else {
@@ -157,7 +215,7 @@ fn main() -> Result<(), String> {
                         let mut seed = [0x73; 32];
                         seed[..16].copy_from_slice(b"pq-geometry-2026");
                         seed[16..24].copy_from_slice(&(index as u64).to_le_bytes());
-                        let mut bytes = Vec::with_capacity(messages * 2468);
+                        let mut bytes = Vec::with_capacity(messages * RECORD_BYTES);
                         for number in 0..messages {
                             let mut message = [0x42; 32];
                             message[..8].copy_from_slice(&(number as u64).to_le_bytes());

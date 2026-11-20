@@ -27,6 +27,7 @@ from fixture_bundle import digest_records, load_manifest, slot_geometry
 from report import measured_rows, render_mean_stdev, save_json, warmed_timings, write_report
 
 LOG_INV_RATE = 2
+CPU_PROFILES = ("auto", "generic", "portable", "avx2", "avx2-gfni", "avx512")
 
 
 def require(condition, message):
@@ -333,10 +334,46 @@ def executable(value):
     return str(Path(path).resolve())
 
 
-def build_info(args):
+def select_sidecar(variants, profile, cpu_flags):
+    if profile == "auto":
+        for candidate in reversed(variants):
+            if set(candidate["required_linux_cpu_flags"]) <= cpu_flags:
+                return candidate
+        raise ValueError("No sidecar build matches the CPU features reported by Linux")
+
+    for candidate in variants:
+        if candidate["profile"] != profile:
+            continue
+        missing = set(candidate["required_linux_cpu_flags"]) - cpu_flags
+        require(not missing, f"CPU profile {profile} requires Linux CPU flags: {', '.join(sorted(missing))}")
+        return candidate
+    raise ValueError(f"CPU profile {profile} is unavailable in this image")
+
+
+def build_info(args, resources):
     result = json.loads(args.build_info.read_text(encoding="utf-8"))
     require(re.fullmatch("[0-9a-f]{40}", result["leanvm_revision"]), "Missing full leanVM commit SHA")
     require("experimental_prover" in result["sidecar_cargo_features"], "Expected experimental prover build")
+    variants = result.get("sidecar_variants")
+    if variants is None:
+        variants = [{
+            "profile": "portable",
+            "binary": "leanvm-sidecar",
+            "required_linux_cpu_flags": [],
+            "target_features": [],
+            "rustflags": result["rustflags"],
+            "sidecar_sha256": result["sidecar_sha256"],
+        }]
+    selected = select_sidecar(variants, args.cpu_profile, set(resources["cpu_flags"]))
+    args.sidecar = executable(args.sidecar or selected["binary"])
+    result.update(
+        sidecar_cpu_profile=selected["profile"],
+        sidecar_binary=Path(args.sidecar).name,
+        sidecar_target_features=selected["target_features"],
+        sidecar_required_linux_cpu_flags=selected["required_linux_cpu_flags"],
+        sidecar_sha256=selected["sidecar_sha256"],
+        rustflags=selected["rustflags"],
+    )
     for path, key in (
         (args.sidecar, "sidecar_sha256"), (args.generator, "fixture_generator_sha256")
     ):
@@ -358,6 +395,7 @@ def get_manifest(args, resources):
     settings = {
         "sizes": sorted(args.sizes),
         "prover_threads": args.threads or default_threads,
+        "cpu_profile": args.cpu_profile,
         "fixture_threads": args.fixture_threads or default_threads,
         "repetitions": args.reps,
         "sidecar_timeout_seconds": args.timeout,
@@ -366,7 +404,7 @@ def get_manifest(args, resources):
         "execution": args.execution,
         "host_cpu_model": args.host_cpu_model,
     }
-    compatibility = {"schema_version": 1, "hardware": resources, "build": build_info(args), "settings": settings}
+    compatibility = {"schema_version": 1, "hardware": resources, "build": build_info(args, resources), "settings": settings}
     path = args.output / "run.json"
     if path.exists():
         require(args.resume, f"{path} already exists. Use --resume or a new output directory.")
@@ -413,7 +451,9 @@ def main():
                         help="operator declaration for this run (default: %(default)s)")
     parser.add_argument("--host-cpu-model", help="optional host model when running in a VM")
     parser.add_argument("--build-info", type=Path, default=Path(__file__).with_name("build.json"))
-    parser.add_argument("--sidecar", default="leanvm-sidecar")
+    parser.add_argument("--cpu-profile", choices=CPU_PROFILES, default="auto",
+                        help="compiled prover CPU profile (default: use the highest supported in the image)")
+    parser.add_argument("--sidecar", help="override the selected sidecar executable with the same digest")
     parser.add_argument("--generator", default="pq-geometry-fixtures")
     args = parser.parse_args()
     if len(set(args.sizes)) != len(args.sizes):
@@ -426,7 +466,6 @@ def main():
         parser.error("--output and --fixture-cache must be different directories")
 
     try:
-        args.sidecar = executable(args.sidecar)
         args.generator = executable(args.generator)
         args.output.mkdir(parents=True, exist_ok=True)
         with run_lock(args.output / ".lock", blocking=False):

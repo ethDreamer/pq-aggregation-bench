@@ -41,7 +41,11 @@ jobs:
         run: |
           docker buildx build --platform "linux/$ARCHITECTURE" --load \
             --build-arg "BENCH_REV=$GITHUB_SHA" --tag pq-aggregation-bench:smoke .
-          ./scripts/smoke.sh pq-aggregation-bench:smoke
+          if [[ $ARCHITECTURE == amd64 ]]; then
+            COMPARE_CPU_PROFILES=1 ./scripts/smoke.sh pq-aggregation-bench:smoke
+          else
+            ./scripts/smoke.sh pq-aggregation-bench:smoke
+          fi
       - name: Verify the published bundled image
         if: ${{ inputs.bundled_image }}
         env:

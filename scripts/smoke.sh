@@ -14,16 +14,19 @@ args=(
 )
 if [[ $variant == bundled ]]; then
     args+=(--read-only --tmpfs /tmp:rw,nosuid,nodev,mode=1777 --volume "$smoke_dir/fixtures:/fixtures:ro")
-    read -r leanvm_revision bundle_digest < <(python3 - <<'BASELINE'
+    leanvm_revision=$(docker run "${args[@]}" --entrypoint python3 "$image" -c \
+        'import json; print(json.load(open("/opt/pq-bench/build.json"))["leanvm_revision"])')
+    bundle_digest=$(python3 - <<'BASELINE'
 import json
 from pathlib import Path
 
-reference = json.loads(Path("baseline/results/1048576.json").read_text())
-print(reference["prover_pin"], reference["fixture_sha256"])
+print(json.loads(Path("baseline/results/1048576.json").read_text())["fixture_sha256"])
 BASELINE
 )
     docker run "${args[@]}" --entrypoint python3 "$image" /opt/pq-bench/fixture_bundle.py verify \
         /opt/pq-bench/bundled-fixtures "$leanvm_revision" --sha256 "$bundle_digest"
+    docker run "${args[@]}" --entrypoint pq-geometry-fixtures "$image" --verify-pack \
+        /opt/pq-bench/bundled-fixtures/fixtures.bin 2
 else
     args+=(--volume "$smoke_dir/fixtures:/fixtures")
 fi
@@ -50,7 +53,9 @@ from math import sqrt
 import subprocess
 import sys
 
+from fixture_bundle import COMPATIBLE_REVISIONS
 from report import render_mean_stdev, timing_statistics, warmed_timings
+from run import select_sidecar
 
 assert timing_statistics({"samples_ms": [1, 3]}) == (2, sqrt(2), 2)
 assert timing_statistics({"samples_ms": []}) == (None, None, 0)
@@ -62,6 +67,27 @@ assert hardware["cpu_quota_cores"] == 2.5
 assert hardware["memory_cgroup_limit_bytes"] == 3 * 2**30
 assert settings["execution"] == sys.argv[2]
 assert settings["repetitions"] == 1
+assert settings["log_inv_rate"] == 2
+assert build["sidecar_wire_version"] == 1 and build["sidecar_verifier"] == "leanvm-v1"
+if build["leanvm_revision"] == "c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764":
+    assert build["leanvm_bindings_version"] == "0.15.0"
+variants = build["sidecar_variants"]
+selected = select_sidecar(variants, "auto", set(hardware["cpu_flags"]))
+assert selected["profile"] == build["sidecar_cpu_profile"]
+assert selected["sidecar_sha256"] == build["sidecar_sha256"]
+assert selected["rustflags"] == build["rustflags"]
+if build["target_platform"] == "linux/amd64":
+    assert select_sidecar(variants, "auto", set())["profile"] == "generic"
+    for profile in ("portable", "avx2", "avx2-gfni", "avx512"):
+        candidate, = (item for item in variants if item["profile"] == profile)
+        flags = set(candidate["required_linux_cpu_flags"])
+        assert select_sidecar(variants, "auto", flags)["profile"] == profile
+    try:
+        select_sidecar(variants, "avx512", set())
+    except ValueError as error:
+        assert "requires Linux CPU flags" in str(error)
+    else:
+        raise AssertionError("accepted an unsupported forced profile")
 bundled = sys.argv[3] == "bundled"
 assert bool(build["fixture_bundle"]) == bundled
 if bundled:
@@ -75,8 +101,8 @@ for row in (single, merge):
     assert len(row["committee_prove"]["samples_ms"]) == 1
     if bundled:
         assert row["fixture_source"] == "bundle" and row["fixture_workers_used"] == 0
-    if build["leanvm_revision"] == "283686575c4e81790591d2c6e3ed21c69c0e3bbe":
-        original = json.loads(Path(f"baseline/results/{row['active_validators']}.json").read_text())
+    original = json.loads(Path(f"baseline/results/{row['active_validators']}.json").read_text())
+    if build["leanvm_revision"] == original["prover_pin"] or build["leanvm_revision"] in COMPATIBLE_REVISIONS:
         assert row["fixture_sha256"] == original["fixture_sha256"]
 with summary_path.with_name("results-mean-stdev.csv").open(newline="") as file:
     single_report, merge_report = csv.DictReader(file)
@@ -104,3 +130,68 @@ for log in ("run.log", "resume.log"):
     assert (Path(sys.argv[4]) / log).read_text().endswith(terminal)
 print("Verified proofs, claim unions, negative checks, runtime limits, resume and timing reports")
 PY
+
+if [[ ${COMPARE_CPU_PROFILES:-0} == 1 ]]; then
+    profiles=$(docker run "${args[@]}" --entrypoint python3 "$image" -c '
+import json
+import sys
+sys.path.insert(0, "/opt/pq-bench")
+from environment import hardware
+info = json.load(open("/opt/pq-bench/build.json"))
+flags = set(hardware()["cpu_flags"])
+for candidate in info["sidecar_variants"]:
+    if set(candidate["required_linux_cpu_flags"]) <= flags:
+        print(candidate["profile"])
+')
+    for profile in $profiles; do
+        sizes=(--sizes 8192 --reps 3)
+        if [[ $profile == generic ]]; then
+            sizes=(--sizes 64 --reps 1)
+        fi
+        docker run "${args[@]}" "$image" --execution native --cpu-profile "$profile" \
+            "${sizes[@]}" --output "/results/profile-$profile" > "$smoke_dir/profile-$profile.log" 2>&1 || {
+            cat "$smoke_dir/profile-$profile.log"
+            exit 1
+        }
+    done
+    if [[ $profiles == *generic* && $profiles == *portable* ]]; then
+        if docker run "${args[@]}" "$image" --execution native --cpu-profile portable \
+            --sizes 64 --reps 1 --output /results/profile-generic --resume; then
+            echo "Accepted a resume with a different CPU profile" >&2
+            exit 1
+        fi
+    fi
+    python3 - "$smoke_dir/results" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+print("Matched native CPU-profile smoke (8,192 validators, three warmed reps, milliseconds)")
+reference = None
+for summary in sorted(Path(sys.argv[1]).glob("profile-*/summary.json")):
+    run = json.loads(summary.read_text())
+    case, = run["cases"]
+    build = run["run"]["build"]
+    profile = build["sidecar_cpu_profile"]
+    assert case["all_proofs_verified"] and case["wrong_message_rejected"]
+    if case["active_validators"] == 64:
+        assert profile == "generic"
+        print("Generic fallback verified a single committee")
+        continue
+    assert case["merged_wrong_message_rejected"] and case["committees_per_slot"] == 2
+    identity = (
+        run["run"]["hardware"], build["leanvm_revision"], case["fixture_sha256"],
+        run["run"]["settings"]["prover_threads"], run["run"]["settings"]["log_inv_rate"],
+    )
+    if reference is None:
+        reference = identity
+        print(", ".join(identity[0]["cpu_models"]), "prover threads", identity[3])
+    assert reference == identity
+    print(
+        profile,
+        f"prove median {case['committee_prove']['median_ms']:.1f}",
+        f"merge median {case['proposer_merge']['median_ms']:.1f}",
+        f"verify median {case['final_verify']['median_ms']:.1f}",
+    )
+PY
+fi

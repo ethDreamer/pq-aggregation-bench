@@ -160,6 +160,13 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
         metadata[0] += f" Runtime OS {system}."
     else:
         metadata.insert(1, f"Runtime OS {system}.")
+    profile = build.get("sidecar_cpu_profile")
+    if profile:
+        release = build.get("leanvm_bindings_version")
+        bindings = f"Bindings {release}. " if release else ""
+        metadata.append(
+            f"{bindings}Experimental prover, CPU profile {profile}, log inverse rate {settings['log_inv_rate']}."
+        )
     if settings.get("host_cpu_model"):
         metadata.append(f"Operator reports a physical host CPU of {settings['host_cpu_model']}.")
     if sample_counts:
@@ -293,6 +300,11 @@ def write_report(directory, manifest, rows):
         f"- Sidecar SHA-256 `{build['sidecar_sha256']}`.",
         f"- Fixture generator SHA-256 `{build['fixture_generator_sha256']}`.",
     ]
+    if build.get("sidecar_cpu_profile"):
+        lines.append(
+            f"- Prover CPU profile `{build['sidecar_cpu_profile']}`. "
+            f"Selected binary `{build['sidecar_binary']}`."
+        )
     bundle = build.get("fixture_bundle")
     if bundle:
         lines.append(

@@ -2,7 +2,9 @@
 
 Measure leanVM’s experimental rate-2 prover with real XMSS committee proofs and recursive slot aggregation. The image has native Linux AMD64 and ARM64 binaries, Python, and a fixture generator. It runs without a Lighthouse build, a testnet, or network access.
 
-The default leanVM commit is [`283686575c4e81790591d2c6e3ed21c69c0e3bbe`](https://github.com/leanEthereum/leanVM/commit/283686575c4e81790591d2c6e3ed21c69c0e3bbe). It matches the published `ethpandaops/lighthouse:pq-devnet-0` image at index `sha256:f571048fbeeb9b3e7eaede512f94e74a09dcc73b4f0565dc5afe3365f122f771` and its [Lighthouse source](https://github.com/ethDreamer/lighthouse/blob/9deb902a682900fa9f7b1d0dd6daa260eecf0bbd/beacon_node/pq_prover/src/lib.rs).
+The default is leanVM [`c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764`](https://github.com/leanEthereum/leanVM/commit/c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764), the [bindings v0.15.0 release](https://github.com/leanEthereum/leanVM/releases/tag/bindings-v0.15.0) selected for devnet-0. The benchmark builds the signer, prover, verifier, and sidecar from that exact commit. It uses the experimental prover at log inverse rate 2 (code rate 1/4).
+
+Historical results use [`283686575c4e81790591d2c6e3ed21c69c0e3bbe`](https://github.com/leanEthereum/leanVM/commit/283686575c4e81790591d2c6e3ed21c69c0e3bbe). Their original images remain available as `leanvm-283686575c4e` and `leanvm-283686575c4e-fixtures`.
 
 ## Run
 
@@ -12,7 +14,7 @@ Use the **bundled image** to run the full 11-case sweep without generating fixtu
 mkdir -p results/full
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/results/full:/results" \
-  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e-fixtures \
+  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42-fixtures \
   --execution native
 ```
 
@@ -24,13 +26,15 @@ For a smaller download or a different leanVM pin, use the fixture-free image. It
 mkdir -p results/quick fixtures
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/results/quick:/results" -v "$PWD/fixtures:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e \
+  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 \
   --execution native --sizes 64 8192
 ```
 
 Cached records are namespaced by fixture format and leanVM SHA. The runner reports how many are already cached and how many it needs to generate.
 
 The defaults are five timed repeats and one initial request per repeated operation. Set `--threads` for the prover and `--fixture-threads` for fixture preparation. They default to the effective CPU capacity rounded down, with a minimum of one. Fixture workers never exceed the number of keys. `--reps` controls sample count and `--timeout` controls sidecar startup and socket timeouts. For emulated or unverified execution, keep the default `--execution unverified` or declare `--execution emulated` and use the result for correctness checks.
+
+On AMD64 the image chooses the highest compiled CPU profile supported by all CPUs available to the process. Use `--cpu-profile portable` to match the compile flags of the historic AMD64 runs. Keep the same host, CPU profile, thread count and sizes when comparing leanVM revisions. The report records the selected profile, Rust flags, binary digest and full leanVM commit.
 
 Each output directory holds one run. Repeat the command with `--resume` to skip completed rows after interruption. Resume requires the same kernel boot, hardware limits, executable hashes, benchmark code, settings, and case selection. A different machine, reboot, pin, or settings requires a new directory.
 
@@ -59,7 +63,7 @@ Either image can also regenerate the report with the saved run mounted read-only
 mkdir -p reports
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/saved-run:/source:ro" -v "$PWD/reports:/results" \
-  --entrypoint python3 ethdreamer/pq-aggregation-bench:leanvm-283686575c4e \
+  --entrypoint python3 ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 \
   /opt/pq-bench/report.py /source --output /results
 ```
 
@@ -93,19 +97,34 @@ Future revisions must support the experimental prover feature, sidecar wire v1, 
 
 ### Build the bundled variant
 
-The fixture pack must match all 11 baseline fixture hashes and the selected leanVM revision. To produce the records from scratch, invoke the generator in the fixture-free image. Use a suitable worker count for the build machine.
+The historical and v0.15.0 bundles contain the same bytes and carry their own leanVM revision in the manifest. The new revision's XMSS verifier accepted every archived record and rejected a changed message for every record. The bundled build repeats these checks and checks the 11 reference hashes. To produce the records from scratch, invoke the fixture-free generator. Use a suitable worker count for the build machine.
 
 ```sh
 mkdir -p fixtures/source
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/source:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-283686575c4e /fixtures 32768 4 1
-python3 fixture_bundle.py pack fixtures/source fixtures/bundle
+  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 32768 4 1
+python3 fixture_bundle.py pack fixtures/source fixtures/bundle \
+  --leanvm-revision c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
 FIXTURE_BUNDLE="$PWD/fixtures/bundle" ./scripts/build-image.sh --load
 ```
 
 `FIXTURE_BUNDLE` selects the two `-fixtures` tags. The fixture payload is passed as a separate build context and stays out of Git. The image records its full SHA-256 and exposes the same bytes on both architectures. An override to a different leanVM revision can use the fixture-free build.
 
-Linux AMD64 uses SSSE3 and PCLMULQDQ. Linux ARM64 uses the ARMv8 AES/PMULL extension and jemalloc configured to support kernels with up to 64 KiB pages. These match the published devnet build flags and work on compatible CPUs without inheriting the builder’s CPU features. Host-tuned builds can select different prover kernels and should be reported separately.
+### CPU profiles
+
+AMD64 builds have these CPU profiles. The launcher checks the kernel's reported flags before it runs an optimized binary. Request a specific profile to repeat a run with the same instruction set.
+
+| Profile | Additional build features |
+| --- | --- |
+| `generic` | Base x86-64 |
+| `portable` | SSSE3 and PCLMULQDQ, the historical Docker flags |
+| `avx2` | Portable features plus AVX2 and BMI2 |
+| `avx2-gfni` | AVX2 profile plus GFNI and VPCLMULQDQ |
+| `avx512` | AVX2-GFNI profile plus AVX-512F, BW, and VBMI |
+
+Both leanVM revisions compile their Keccak SIMD kernels according to target features. The Core i5-8600K and i9-9900K support AVX2. The Core i7-1165G7 also supports AVX-512 and can select the AVX-512 profile when Linux exposes all required features. An emulated guest or a hypervisor can expose fewer features. Choose native execution for performance runs. [i5-8600K](https://www.intel.com/content/www/us/en/products/sku/126685/intel-core-i58600k-processor-9m-cache-up-to-4-30-ghz/specifications.html) · [i9-9900K](https://www.intel.com/content/www/us/en/products/sku/186605/intel-core-i99900k-processor-16m-cache-up-to-5-00-ghz/specifications.html) · [i7-1165G7](https://www.intel.com/content/www/us/en/products/sku/208921/intel-core-i71165g7-processor-12m-cache-up-to-4-70-ghz-with-ipu/specifications.html)
+
+Linux ARM64 uses the existing ARMv8 AES/PMULL profile and jemalloc configured for kernels with up to 64 KiB pages. For all platforms the fixture hashes, committee geometry and protocol settings stay fixed across CPU profiles.
 
 The benchmark is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). leanVM and its WOTS code retain their upstream license.

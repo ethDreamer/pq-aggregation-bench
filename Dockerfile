@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG RUST_IMAGE=rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
-ARG LEANVM_REV=283686575c4e81790591d2c6e3ed21c69c0e3bbe
+ARG LEANVM_REV=c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
 FROM ${RUST_IMAGE} AS binaries
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -51,6 +51,7 @@ COPY --from=fixture_bundle --chmod=0444 fixtures.bin manifest.json /opt/pq-bench
 USER 65532:65532
 RUN --network=none test -n "$FIXTURE_BUNDLE_SHA256" \
     && python3 /opt/pq-bench/fixture_bundle.py verify \
-        /opt/pq-bench/bundled-fixtures "$LEANVM_REV" --sha256 "$FIXTURE_BUNDLE_SHA256"
+        /opt/pq-bench/bundled-fixtures "$LEANVM_REV" --sha256 "$FIXTURE_BUNDLE_SHA256" \
+    && pq-geometry-fixtures --verify-pack /opt/pq-bench/bundled-fixtures/fixtures.bin 4
 
 FROM runtime AS fixture-free

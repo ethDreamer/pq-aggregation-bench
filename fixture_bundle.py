@@ -1,4 +1,4 @@
-"""Pack or verify the historical, fully validated XMSS fixture set."""
+"""Pack or verify the deterministic XMSS fixture set."""
 
 import argparse
 import hashlib
@@ -15,6 +15,8 @@ ATT_MESSAGE = bytes(8) + bytes([0x42]) * 24
 ATT_LEAF = 32768
 BUNDLE_DIRECTORY = Path(__file__).with_name("bundled-fixtures")
 BASELINE_RESULTS = Path(__file__).with_name("baseline") / "results"
+# Verified against every record using the corresponding XMSS verifier.
+COMPATIBLE_REVISIONS = {"c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764"}
 
 
 def slot_geometry(size):
@@ -102,7 +104,7 @@ def verify_bundle(directory, revision, expected_digest):
     return manifest
 
 
-def pack_fixtures(source, output):
+def pack_fixtures(source, output, requested_revision=None):
     if output.exists():
         raise ValueError(f"Bundle destination already exists: {output}")
     baseline_hashes = {}
@@ -116,7 +118,10 @@ def pack_fixtures(source, output):
         revisions.add(baseline["prover_pin"])
     if len(revisions) != 1:
         raise ValueError("Expected one leanVM revision across all baseline cases")
-    revision = revisions.pop()
+    baseline_revision = revisions.pop()
+    revision = requested_revision or baseline_revision
+    if revision != baseline_revision and revision not in COMPATIBLE_REVISIONS:
+        raise ValueError(f"Fixture compatibility has not been established for {revision}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".fixture-pack-", dir=output.parent) as directory:
@@ -148,6 +153,7 @@ def main():
     pack = actions.add_parser("pack", help="pack records and verify all baseline hashes")
     pack.add_argument("source", type=Path)
     pack.add_argument("output", type=Path)
+    pack.add_argument("--leanvm-revision", help="validated full leanVM SHA (default: historical reference)")
     verify = actions.add_parser("verify", help="verify packed records and their manifest")
     verify.add_argument("bundle", type=Path)
     verify.add_argument("revision")
@@ -155,7 +161,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == "pack":
-            manifest = pack_fixtures(args.source, args.output)
+            manifest = pack_fixtures(args.source, args.output, args.leanvm_revision)
         else:
             digest = args.sha256 or load_manifest(args.bundle, args.revision)["sha256"]
             manifest = verify_bundle(args.bundle, args.revision, digest)
