@@ -9,7 +9,7 @@ smoke_dir=$(mktemp -d "${TMPDIR:-/tmp}/pq-bench-smoke.XXXXXX")
 trap 'rm -rf "$smoke_dir"' EXIT
 mkdir "$smoke_dir/results" "$smoke_dir/fixtures"
 args=(
-    --rm --network none --user "$(id -u):$(id -g)" --cpus 2.5 --memory 3g
+    --rm --network none --user "$(id -u):$(id -g)" --cpus 2.5 --memory 6g
     --volume "$smoke_dir/results:/results"
 )
 sizes=(64 8192)
@@ -64,7 +64,7 @@ summary_path = Path(sys.argv[1])
 summary = json.loads(summary_path.read_text())
 build, hardware, settings = (summary["run"][key] for key in ("build", "hardware", "settings"))
 assert hardware["cpu_quota_cores"] == 2.5
-assert hardware["memory_cgroup_limit_bytes"] == 3 * 2**30
+assert hardware["memory_cgroup_limit_bytes"] == 6 * 2**30
 assert settings["execution"] == sys.argv[2]
 assert settings["repetitions"] == 1
 assert settings["log_inv_rate"] == 2
@@ -178,7 +178,7 @@ terminal = subprocess.check_output(command, text=True)
 assert table == markdown and "| 64 |" in markdown
 assert "Reuse" in terminal and "Validators" in terminal and "|" not in terminal
 assert "Effective CPU allocation 2.5 CPU equivalents" in terminal
-assert "Container memory limit 3.0 GiB" in terminal
+assert "Container memory limit 6.0 GiB" in terminal
 narrow = render_mean_stdev(summary["run"], warmed_timings(summary["cases"]), width=58)
 assert max(map(len, narrow.splitlines())) <= 58
 for column in ("Comm/slot", "Sigs/comm", "Sigs/slot", "Merges", "Prove one (ms)",
