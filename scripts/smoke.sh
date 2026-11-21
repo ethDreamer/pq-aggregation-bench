@@ -21,7 +21,7 @@ if [[ $variant == bundled ]]; then
     bundle_digest=$(docker run "${args[@]}" --entrypoint python3 "$image" -c \
         'import json; print(json.load(open("/opt/pq-bench/bundled-fixtures/manifest.json"))["sha256"])')
     docker run "${args[@]}" --entrypoint python3 "$image" /opt/pq-bench/fixture_bundle.py verify \
-        /opt/pq-bench/bundled-fixtures "$leanvm_revision" --sha256 "$bundle_digest" --require-prior-slot
+        /opt/pq-bench/bundled-fixtures "$leanvm_revision" --sha256 "$bundle_digest" --require-round3
     docker run "${args[@]}" --entrypoint pq-geometry-fixtures "$image" --verify-pack \
         /opt/pq-bench/bundled-fixtures/fixtures.bin 2
 else
@@ -90,6 +90,7 @@ assert bool(build["fixture_bundle"]) == bundled
 if bundled:
     assert build["fixture_bundle"]["record_count"] == 32768
     assert build["fixture_bundle"]["prior_slot"]["record_count"] == 30720
+    assert build["fixture_bundle"]["second_prior_slot"]["record_count"] == 30720
 single, merge, *saturated = summary["cases"]
 if bundled:
     saturated_case, = saturated
@@ -100,6 +101,8 @@ assert merge["committees_per_slot"] == 2 and merge["proposer_merge"] is not None
 assert merge["merged_wrong_message_rejected"]
 assert single["paired_first_merge"] is single["two_round_merge"] is None
 assert single["first_two_round_merge_ms"] is None
+assert single["merge_sequence_requests"] == 2
+assert merge["merge_sequence_requests"] == 3
 for row in summary["cases"]:
     fresh = fresh_committee_count(row["committees_per_slot"])
     assert row["improvement_fresh_proofs"] == fresh
@@ -107,6 +110,15 @@ for row in summary["cases"]:
     assert row["improvement_added_claims"] == fresh * row["signatures_per_committee"]
     assert row["improvement_total_claims"] == row["signatures_per_slot"] + row["improvement_added_claims"]
     assert row["improvement_message_groups"] == 2
+    assert row["round3_fresh_proofs"] == fresh and row["round3_fan_in"] == fresh + 1
+    assert row["round3_added_claims"] == row["improvement_added_claims"]
+    assert row["round3_total_claims"] == row["improvement_total_claims"] + row["round3_added_claims"]
+    assert row["round3_message_groups"] == 3
+    assert row["round3_wrong_message_rejected"] and row["round3_incomplete_claims_rejected"]
+    third, = row["round3_merge"]["samples_ms"]
+    sequence, = row["merge_sequence"]["samples_ms"]
+    assert len(row["round3_verify"]["samples_ms"]) == 1
+    assert row["merge_sequence_requests"] == 2 + row["merge_operations"]
     assert row["improved_wrong_message_rejected"] and row["improved_incomplete_claims_rejected"]
     assert len(row["proposer_improvement"]["samples_ms"]) == len(row["improved_verify"]["samples_ms"]) == 1
     if row["committees_per_slot"] > 1:
@@ -114,13 +126,19 @@ for row in summary["cases"]:
         improvement, = row["proposer_improvement"]["samples_ms"]
         total, = row["two_round_merge"]["samples_ms"]
         assert total >= first + improvement
+        assert sequence >= total + third
         assert row["first_two_round_merge_ms"] >= row["first_paired_merge_ms"] + row["first_improvement_ms"]
+        assert row["first_merge_sequence_ms"] >= row["first_two_round_merge_ms"] + row["first_round3_merge_ms"]
+    else:
+        improvement, = row["proposer_improvement"]["samples_ms"]
+        assert sequence >= improvement + third
     assert row["all_proofs_verified"] and row["wrong_message_rejected"]
     assert len(row["committee_prove"]["samples_ms"]) == 1
     if bundled:
         assert row["fixture_source"] == "bundle" and row["fixture_workers_used"] == 0
-        prior = row["prior_slot_fixture"]
-        assert prior["fixture_source"] == "bundle" and prior["fixture_workers_used"] == 0
+        for slot in ("prior_slot_fixture", "second_prior_slot_fixture"):
+            prior = row[slot]
+            assert prior["fixture_source"] == "bundle" and prior["fixture_workers_used"] == 0
     original = json.loads(Path(f"baseline/results/{row['active_validators']}.json").read_text())
     if build["leanvm_revision"] == original["prover_pin"] or build["leanvm_revision"] in COMPATIBLE_REVISIONS:
         assert row["fixture_sha256"] == original["fixture_sha256"]
@@ -131,6 +149,9 @@ assert single_report["proposer_merge_mean_ms"] == single_report["proposer_merge_
 assert single_report["two_round_merge_n"] == "0" and single_report["two_round_merge_mean_ms"] == ""
 for row, raw in zip((single_report, merge_report, *saturated_reports), summary["cases"]):
     assert row["proposer_improvement_n"] == row["improved_verify_n"] == "1"
+    assert row["round3_merge_n"] == row["round3_verify_n"] == row["merge_sequence_n"] == "1"
+    assert int(row["merge_sequence_requests"]) == raw["merge_sequence_requests"]
+    assert float(row["merge_sequence_mean_ms"]) == raw["merge_sequence"]["samples_ms"][0]
     if raw["merge_operations"]:
         assert row["paired_first_merge_n"] == row["two_round_merge_n"] == "1"
         assert float(row["two_round_merge_mean_ms"]) == raw["two_round_merge"]["samples_ms"][0]
@@ -149,9 +170,19 @@ assert "Container memory limit 3.0 GiB" in terminal
 narrow = render_mean_stdev(summary["run"], warmed_timings(summary["cases"]), width=58)
 assert max(map(len, narrow.splitlines())) <= 58
 for column in ("Comm/slot", "Sigs/comm", "Sigs/slot", "Merges", "Prove one (ms)",
-               "Merge (ms)", "Verify (ms)", "Comm verify (ms)", "Final verify n",
-               "Improvement (ms)", "Fresh proofs", "New claims", "Two rounds (ms)"):
+               "Round 1 (ms)", "Round 2 (ms)", "Round 3 (ms)", "Two rounds (ms)",
+               "Full sequence (ms)", "Verify orig. (ms)", "Verify R3 (ms)",
+               "Comm verify (ms)", "Final verify n", "Fresh proofs", "New claims"):
     assert column in narrow
+assert "Slot geometry" in narrow and "Timings by validator count" in narrow
+wide_header = next(line for line in terminal.splitlines() if "Comm/slot" in line)
+for column in ("Prove one (ms)", "Round 1 (ms)", "Round 2 (ms)", "Round 3 (ms)",
+               "Two rounds (ms)", "Full sequence (ms)", "Verify orig. (ms)", "Verify R3 (ms)"):
+    assert column in wide_header
+markdown_header = next(line for line in markdown.splitlines() if "Committees / slot" in line)
+gfm_rows = [line for line in markdown.splitlines() if line.startswith("| ")][:2 + len(summary["cases"])]
+assert all(line.count("|") == markdown_header.count("|") for line in gfm_rows)
+assert "Round 3 merge (ms)" in markdown_header and "Full sequence (ms)" in markdown_header
 for log in ("run.log", "resume.log"):
     assert (Path(sys.argv[4]) / log).read_text().endswith(terminal)
 print("Verified proofs, claim unions, negative checks, runtime limits, resume and timing reports")

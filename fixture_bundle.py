@@ -13,7 +13,7 @@ RECORD_SIZE = 32 + 32 + 2404
 FIXTURE_FORMAT = "one-leaf-xmss-v1"
 ATT_MESSAGE = bytes(8) + bytes([0x42]) * 24
 ATT_LEAF = 32768
-PRIOR_SLOT_MESSAGE = b"\x01" + ATT_MESSAGE[1:]
+PRIOR_SLOT_NAMES = ("prior_slot", "second_prior_slot")
 MAX_IMPROVEMENT_CHILDREN = 16
 BUNDLE_DIRECTORY = Path(__file__).with_name("bundled-fixtures")
 BASELINE_RESULTS = Path(__file__).with_name("baseline") / "results"
@@ -47,24 +47,24 @@ PREFIX_COUNTS = {str(record_count(size)) for size in SIZES}
 PRIOR_PREFIX_COUNTS = {str(prior_record_count(size)) for size in SIZES}
 
 
-def validate_record(record, keys, prior_slot=False):
+def validate_record(record, keys, slots_back=0):
     if len(record) != RECORD_SIZE:
         raise ValueError("Wrong fixture size")
     key = record[:32]
     if key in keys:
         raise ValueError("Public keys must be disjoint")
     keys.add(key)
-    if record[32:64] != (PRIOR_SLOT_MESSAGE if prior_slot else ATT_MESSAGE):
+    if record[32:64] != slots_back.to_bytes(8, "little") + ATT_MESSAGE[8:]:
         raise ValueError("Unexpected attestation message")
-    if struct.unpack_from("<I", record, 64)[0] != ATT_LEAF - int(prior_slot):
+    if struct.unpack_from("<I", record, 64)[0] != ATT_LEAF - slots_back:
         raise ValueError("Unexpected XMSS leaf index")
 
 
-def digest_records(records, prior_slot=False):
+def digest_records(records, slots_back=0):
     keys = set()
     digest = hashlib.sha256()
     for record in records:
-        validate_record(record, keys, prior_slot)
+        validate_record(record, keys, slots_back)
         digest.update(record)
     return digest.hexdigest()
 
@@ -95,7 +95,7 @@ def check_prefixes(prefixes, counts):
 def load_manifest(directory, revision):
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     version = manifest.get("schema_version")
-    if version not in (1, 2):
+    if version not in (1, 2, 3):
         raise ValueError("Unsupported fixture bundle schema")
     for name, value in reference_fields(revision, version).items():
         if manifest.get(name) != value:
@@ -106,13 +106,16 @@ def load_manifest(directory, revision):
     check_prefixes(prefixes, PREFIX_COUNTS)
     if not is_sha256(manifest.get("sha256")):
         raise ValueError("Invalid fixture bundle digest")
-    if version == 1:
-        if manifest["sha256"] != prefixes[str(MAX_RECORDS)] or "prior_slot" in manifest:
-            raise ValueError("Invalid legacy fixture bundle digest or metadata")
-    else:
-        prior = manifest.get("prior_slot")
+    if version == 1 and manifest["sha256"] != prefixes[str(MAX_RECORDS)]:
+        raise ValueError("Invalid legacy fixture bundle digest")
+    for slots_back, name in enumerate(PRIOR_SLOT_NAMES, 1):
+        if slots_back >= version:
+            if name in manifest:
+                raise ValueError(f"Unexpected {name} fixture segment")
+            continue
+        prior = manifest.get(name)
         if not isinstance(prior, dict) or prior.get("record_count") != MAX_PRIOR_RECORDS:
-            raise ValueError("Invalid prior-slot fixture count")
+            raise ValueError(f"Invalid {name} fixture count")
         check_prefixes(prior.get("prefix_sha256"), PRIOR_PREFIX_COUNTS)
         count += MAX_PRIOR_RECORDS
     if (directory / "fixtures.bin").stat().st_size != count * RECORD_SIZE:
@@ -120,11 +123,11 @@ def load_manifest(directory, revision):
     return manifest
 
 
-def scan_records(records, cutoffs, keys, digest, *, prior_slot=False, output=None):
+def scan_records(records, cutoffs, keys, digest, *, slots_back=0, output=None):
     prefixes = {}
     segment = hashlib.sha256()
     for index, record in enumerate(records, start=1):
-        validate_record(record, keys, prior_slot)
+        validate_record(record, keys, slots_back)
         if output is not None:
             output.write(record)
         digest.update(record)
@@ -134,30 +137,31 @@ def scan_records(records, cutoffs, keys, digest, *, prior_slot=False, output=Non
     return prefixes
 
 
-def verify_bundle(directory, revision, expected_digest, require_prior_slot=False):
+def verify_bundle(directory, revision, expected_digest, minimum_version=1):
     manifest = load_manifest(directory, revision)
     if manifest["sha256"] != expected_digest:
         raise ValueError("Fixture bundle does not match the requested digest")
-    prior = manifest.get("prior_slot")
-    if require_prior_slot and prior is None:
-        raise ValueError("This benchmark needs a bundle containing prior-slot fixtures")
+    if manifest["schema_version"] < minimum_version:
+        raise ValueError(f"This benchmark needs fixture bundle schema {minimum_version} or newer")
     digest = hashlib.sha256()
     keys = set()
     with (directory / "fixtures.bin").open("rb") as payload:
         current = (payload.read(RECORD_SIZE) for _ in range(MAX_RECORDS))
         if scan_records(current, PREFIX_COUNTS, keys, digest) != manifest["prefix_sha256"]:
             raise ValueError("Current-slot fixture prefix digest differs from the manifest")
-        if prior:
+        for slots_back, name in enumerate(PRIOR_SLOT_NAMES[:manifest["schema_version"] - 1], 1):
             older = (payload.read(RECORD_SIZE) for _ in range(MAX_PRIOR_RECORDS))
-            prefixes = scan_records(older, PRIOR_PREFIX_COUNTS, keys, digest, prior_slot=True)
-            if prefixes != prior["prefix_sha256"]:
-                raise ValueError("Prior-slot fixture prefix digest differs from the manifest")
+            prefixes = scan_records(older, PRIOR_PREFIX_COUNTS, keys, digest, slots_back=slots_back)
+            if prefixes != manifest[name]["prefix_sha256"]:
+                raise ValueError(f"{name} fixture prefix digest differs from the manifest")
     if digest.hexdigest() != manifest["sha256"]:
         raise ValueError("Fixture payload digest differs from the manifest")
     return manifest
 
 
-def pack_fixtures(source, output, requested_revision=None, prior_source=None):
+def pack_fixtures(source, output, requested_revision=None, prior_source=None, second_prior_source=None):
+    if second_prior_source is not None and prior_source is None:
+        raise ValueError("The second prior slot requires the first prior-slot fixture set")
     if output.exists():
         raise ValueError(f"Bundle destination already exists: {output}")
     baseline_hashes = {}
@@ -181,20 +185,20 @@ def pack_fixtures(source, output, requested_revision=None, prior_source=None):
         staging = Path(directory)
         digest = hashlib.sha256()
         keys = set()
-        version = 2 if prior_source is not None else 1
-        manifest = reference_fields(revision, version)
+        prior_sources = tuple(path for path in (prior_source, second_prior_source) if path is not None)
+        manifest = reference_fields(revision, 1 + len(prior_sources))
         with (staging / "fixtures.bin").open("wb") as payload:
             current = ((source / f"key-{index:05}.bin").read_bytes() for index in range(MAX_RECORDS))
             prefixes = scan_records(current, PREFIX_COUNTS, keys, digest, output=payload)
             if prefixes != baseline_hashes:
                 raise ValueError("Current-slot fixture prefix differs from the historical dataset")
             manifest["prefix_sha256"] = prefixes
-            if prior_source is not None:
-                older = ((prior_source / f"key-{index:05}.bin").read_bytes()
+            for slots_back, (name, prior_directory) in enumerate(zip(PRIOR_SLOT_NAMES, prior_sources), 1):
+                older = ((prior_directory / f"key-{index:05}.bin").read_bytes()
                          for index in range(MAX_PRIOR_RECORDS))
                 prefixes = scan_records(older, PRIOR_PREFIX_COUNTS, keys, digest,
-                                        prior_slot=True, output=payload)
-                manifest["prior_slot"] = {
+                                        slots_back=slots_back, output=payload)
+                manifest[name] = {
                     "record_count": MAX_PRIOR_RECORDS,
                     "prefix_sha256": prefixes,
                 }
@@ -212,18 +216,23 @@ def main():
     pack.add_argument("output", type=Path)
     pack.add_argument("--leanvm-revision", help="validated full leanVM SHA (default: historical reference)")
     pack.add_argument("--prior-slot-source", type=Path, help="directory containing the prior-slot records")
+    pack.add_argument("--second-prior-slot-source", type=Path, help="records for the second prior slot")
     verify = actions.add_parser("verify", help="verify packed records and their manifest")
     verify.add_argument("bundle", type=Path)
     verify.add_argument("revision")
     verify.add_argument("--sha256", help="expected full payload SHA-256")
-    verify.add_argument("--require-prior-slot", action="store_true")
+    minimum = verify.add_mutually_exclusive_group()
+    minimum.add_argument("--require-prior-slot", dest="minimum_version", action="store_const", const=2)
+    minimum.add_argument("--require-round3", dest="minimum_version", action="store_const", const=3)
+    verify.set_defaults(minimum_version=1)
     args = parser.parse_args()
     try:
         if args.action == "pack":
-            manifest = pack_fixtures(args.source, args.output, args.leanvm_revision, args.prior_slot_source)
+            manifest = pack_fixtures(args.source, args.output, args.leanvm_revision,
+                                     args.prior_slot_source, args.second_prior_slot_source)
         else:
             digest = args.sha256 or load_manifest(args.bundle, args.revision)["sha256"]
-            manifest = verify_bundle(args.bundle, args.revision, digest, args.require_prior_slot)
+            manifest = verify_bundle(args.bundle, args.revision, digest, args.minimum_version)
         print(manifest["sha256"])
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Fixture bundle failed: {error}\n")

@@ -51,7 +51,7 @@ COPY --from=fixture_bundle --chmod=0444 fixtures.bin manifest.json /opt/pq-bench
 USER 65532:65532
 RUN --network=none test -n "$FIXTURE_BUNDLE_SHA256" \
     && python3 /opt/pq-bench/fixture_bundle.py verify \
-        /opt/pq-bench/bundled-fixtures "$LEANVM_REV" --sha256 "$FIXTURE_BUNDLE_SHA256" --require-prior-slot \
+        /opt/pq-bench/bundled-fixtures "$LEANVM_REV" --sha256 "$FIXTURE_BUNDLE_SHA256" --require-round3 \
     && pq-geometry-fixtures --verify-pack /opt/pq-bench/bundled-fixtures/fixtures.bin 4
 
 FROM runtime AS fixture-free

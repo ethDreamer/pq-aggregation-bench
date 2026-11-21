@@ -45,7 +45,7 @@ tag="$image:leanvm-${revision:0:12}"
 options=("$mode")
 if [[ -n ${FIXTURE_BUNDLE:-} ]]; then
     bundle_directory=$(cd "$FIXTURE_BUNDLE" && pwd -P)
-    fixture_digest=$(python3 fixture_bundle.py verify "$bundle_directory" "$revision" --require-prior-slot)
+    fixture_digest=$(python3 fixture_bundle.py verify "$bundle_directory" "$revision" --require-round3)
     tag="$tag-fixtures"
     options+=(--target bundled --build-context "fixture_bundle=$bundle_directory")
     options+=(--build-arg "FIXTURE_BUNDLE_SHA256=$fixture_digest")

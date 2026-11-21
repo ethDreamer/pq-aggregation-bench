@@ -22,7 +22,10 @@ import time
 from uuid import uuid4
 
 from environment import hardware, session_fingerprint
-from fixture_bundle import BUNDLE_DIRECTORY, FIXTURE_FORMAT, MAX_RECORDS, RECORD_SIZE, SIZES
+from fixture_bundle import (
+    BUNDLE_DIRECTORY, FIXTURE_FORMAT, MAX_PRIOR_RECORDS, MAX_RECORDS, PRIOR_SLOT_NAMES,
+    RECORD_SIZE, SIZES,
+)
 from fixture_bundle import digest_records, fresh_committee_count, load_manifest, slot_geometry
 from report import measured_rows, render_mean_stdev, save_json, warmed_timings, write_report
 
@@ -150,24 +153,26 @@ def claims_for(records):
     return u64(len(claims)) + b"".join(claims) + u64(0) + b"\x00"
 
 
-def prepare_fixtures(args, manifest, count, prior_slot=False):
+def prepare_fixtures(args, manifest, count, slots_back=0):
     start = time.monotonic()
     build = manifest["build"]
     workers = 0
     bundle = build["fixture_bundle"]
-    label = " prior-slot" if prior_slot else ""
+    segment = PRIOR_SLOT_NAMES[slots_back - 1] if slots_back else None
+    cache_suffix = segment.replace("_", "-") if segment else ""
+    label = f" {cache_suffix}" if cache_suffix else ""
     if bundle:
         fixture_source = "bundle"
         print(f"  Loading {count} pre-generated{label} fixtures from the image", flush=True)
         with (BUNDLE_DIRECTORY / "fixtures.bin").open("rb") as payload:
-            if prior_slot:
-                payload.seek(MAX_RECORDS * RECORD_SIZE)
+            if slots_back:
+                payload.seek((MAX_RECORDS + (slots_back - 1) * MAX_PRIOR_RECORDS) * RECORD_SIZE)
             records = [payload.read(RECORD_SIZE) for _ in range(count)]
     else:
         fixture_source = "cache"
         directory = args.fixture_cache / FIXTURE_FORMAT / build["leanvm_revision"]
-        if prior_slot:
-            directory /= "prior-slot"
+        if cache_suffix:
+            directory /= cache_suffix
         directory.mkdir(parents=True, exist_ok=True)
         with run_lock(directory / ".lock", blocking=True):
             paths = [directory / f"key-{index:05}.bin" for index in range(count)]
@@ -177,17 +182,17 @@ def prepare_fixtures(args, manifest, count, prior_slot=False):
                 workers = min(missing, manifest["settings"]["fixture_threads"])
                 print(f"  Generating {missing}{label} fixtures; {count - missing} already cached", flush=True)
                 command = [args.generator, str(directory), str(count), str(workers), "1"]
-                if prior_slot:
-                    command.append("--prior-slot")
+                if cache_suffix:
+                    command.append(f"--{cache_suffix}")
                 subprocess.run(command, check=True)
             else:
                 print(f"  Reusing {count} cached{label} fixtures", flush=True)
             records = [path.read_bytes() for path in paths]
 
-    digest = digest_records(records, prior_slot)
+    digest = digest_records(records, slots_back)
     if bundle:
-        segment = bundle["prior_slot"] if prior_slot else bundle
-        require(digest == segment["prefix_sha256"][str(count)], "Bundled fixture prefix failed its SHA-256 check")
+        prefixes = (bundle[segment] if segment else bundle)["prefix_sha256"]
+        require(digest == prefixes[str(count)], "Bundled fixture prefix failed its SHA-256 check")
     return records, {
         "fixture_source": fixture_source,
         "fixture_sha256": digest,
@@ -242,50 +247,89 @@ def repeat_proof(repetitions, connection, children, records, claims, label=None)
     return stats(proves), stats(verifies), sizes
 
 
-def measure_improvement(connection, children, fresh_children, first_claims, final_claims, repetitions):
+def measure_recursive_rounds(connection, children, fresh_children, third_children,
+                             first_claims, second_claims, third_claims, repetitions):
     def sample():
         ready = children[0]
-        first_ms = total_ms = None
+        first_ms = two_round_ms = None
+        start = time.perf_counter_ns()
         if len(children) > 1:
-            start = time.perf_counter_ns()
             ready, first_ms = timed(lambda: connection.aggregate(children, []))
         improved, improvement_ms = timed(lambda: connection.aggregate([ready, *fresh_children], []))
         if first_ms is not None:
-            total_ms = (time.perf_counter_ns() - start) / 1e6
-            verify_claims(connection, ready, first_claims)
-        verify_ms = verify_claims(connection, improved, final_claims)
-        return improved, improvement_ms, first_ms, total_ms, verify_ms
+            two_round_ms = (time.perf_counter_ns() - start) / 1e6
+        third, third_ms = timed(lambda: connection.aggregate([improved, *third_children], []))
+        sequence_ms = (time.perf_counter_ns() - start) / 1e6
 
-    initial, initial_ms, initial_first_ms, initial_total_ms, initial_verify_ms = sample()
-    check_wrong_message(connection, initial)
-    require(
-        not connection.verify((first_claims, initial[1])),
-        "Improved proof verified against the incomplete original claim set",
-    )
-    improvements, first_rounds, totals, verifies, sizes = [], [], [], [], []
-    for index in range(repetitions):
-        improved, improvement_ms, first_ms, total_ms, verify_ms = sample()
-        improvements.append(improvement_ms)
-        verifies.append(verify_ms)
-        sizes.append(len(improved[1]))
         if first_ms is not None:
-            first_rounds.append(first_ms)
-            totals.append(total_ms)
-        print(f"  improvement {index + 1}/{repetitions}: {improvement_ms:.1f} ms, verified", flush=True)
+            verify_claims(connection, ready, first_claims)
+        second_verify_ms = verify_claims(connection, improved, second_claims)
+        third_verify_ms = verify_claims(connection, third, third_claims)
+        timings = {
+            "proposer_improvement": improvement_ms,
+            "paired_first_merge": first_ms,
+            "two_round_merge": two_round_ms,
+            "improved_verify": second_verify_ms,
+            "round3_merge": third_ms,
+            "round3_verify": third_verify_ms,
+            "merge_sequence": sequence_ms,
+        }
+        return timings, improved, third
+
+    initial, initial_second, initial_third = sample()
+    for proof, previous_claims in ((initial_second, first_claims), (initial_third, second_claims)):
+        check_wrong_message(connection, proof)
+        require(
+            not connection.verify((previous_claims, proof[1])),
+            "Recursive proof verified against the previous round's incomplete claim set",
+        )
+
+    samples = {operation: [] for operation in initial}
+    improved_sizes, third_sizes = [], []
+    for index in range(repetitions):
+        timings, improved, third = sample()
+        for operation, elapsed_ms in timings.items():
+            if elapsed_ms is not None:
+                samples[operation].append(elapsed_ms)
+        improved_sizes.append(len(improved[1]))
+        third_sizes.append(len(third[1]))
+        print(
+            f"  recursive sequence {index + 1}/{repetitions}: "
+            f"round 2 {timings['proposer_improvement']:.1f} ms, "
+            f"round 3 {timings['round3_merge']:.1f} ms, "
+            f"total {timings['merge_sequence']:.1f} ms, verified",
+            flush=True,
+        )
+
     return {
-        "first_improvement_ms": initial_ms,
-        "first_improved_verify_ms": initial_verify_ms,
-        "first_paired_merge_ms": initial_first_ms,
-        "first_two_round_merge_ms": initial_total_ms,
-        "proposer_improvement": stats(improvements),
-        "paired_first_merge": stats(first_rounds) if first_rounds else None,
-        "two_round_merge": stats(totals) if totals else None,
-        "improved_verify": stats(verifies),
-        "improved_proof_bytes": len(initial[1]),
-        "warmed_improved_proof_bytes": sizes,
+        "first_improvement_ms": initial["proposer_improvement"],
+        "first_improved_verify_ms": initial["improved_verify"],
+        "first_paired_merge_ms": initial["paired_first_merge"],
+        "first_two_round_merge_ms": initial["two_round_merge"],
+        "first_round3_merge_ms": initial["round3_merge"],
+        "first_round3_verify_ms": initial["round3_verify"],
+        "first_merge_sequence_ms": initial["merge_sequence"],
+        **{operation: stats(values) if values else None for operation, values in samples.items()},
+        "improved_proof_bytes": len(initial_second[1]),
+        "warmed_improved_proof_bytes": improved_sizes,
         "improved_wrong_message_rejected": True,
         "improved_incomplete_claims_rejected": True,
+        "round3_proof_bytes": len(initial_third[1]),
+        "warmed_round3_proof_bytes": third_sizes,
+        "round3_wrong_message_rejected": True,
+        "round3_incomplete_claims_rejected": True,
     }
+
+
+def prepare_fresh_children(args, manifest, connection, per_committee, count, slots_back):
+    records, metadata = prepare_fixtures(args, manifest, count, slots_back)
+    children, proving_ms = [], []
+    for start in range(0, count, per_committee):
+        group = records[start:start + per_committee]
+        pair, elapsed_ms, _ = prove(connection, [], group, claims_for(group))
+        children.append(pair)
+        proving_ms.append(elapsed_ms)
+    return records, metadata, children, proving_ms
 
 
 def run_case(args, manifest, size):
@@ -368,35 +412,44 @@ def run_case(args, manifest, size):
 
         fresh_committees = fresh_committee_count(committees)
         fresh_count = fresh_committees * per_committee
-        older_records, prior_metadata = prepare_fixtures(args, manifest, fresh_count, prior_slot=True)
-        require(
-            {record[:32] for record in records}.isdisjoint(record[:32] for record in older_records),
-            "Prior-slot fixture keys overlap the current slot",
+        older_records, prior_metadata, fresh_children, fresh_proving_ms = prepare_fresh_children(
+            args, manifest, connection, per_committee, fresh_count, 1
         )
-        improved_claims = claims_for(records + older_records)
-        fresh_children = []
-        fresh_proving_ms = []
-        for start in range(0, fresh_count, per_committee):
-            group = older_records[start:start + per_committee]
-            pair, elapsed, _ = prove(connection, [], group, claims_for(group))
-            fresh_children.append(pair)
-            fresh_proving_ms.append(elapsed)
+        oldest_records, second_prior_metadata, third_children, third_child_proving_ms = prepare_fresh_children(
+            args, manifest, connection, per_committee, fresh_count, 2
+        )
+        second_records = records + older_records
+        third_records = second_records + oldest_records
+        require(
+            len({record[:32] for record in third_records}) == len(third_records),
+            "Fixture keys overlap across slots",
+        )
         result.update(
             improvement_fan_in=1 + fresh_committees,
             improvement_fresh_proofs=fresh_committees,
             improvement_added_claims=fresh_count,
-            improvement_total_claims=count + fresh_count,
+            improvement_total_claims=len(second_records),
             improvement_message_groups=2,
             prior_slot_fixture=prior_metadata,
             fresh_child_proving_ms=fresh_proving_ms,
+            round3_fan_in=1 + fresh_committees,
+            round3_fresh_proofs=fresh_committees,
+            round3_added_claims=fresh_count,
+            round3_total_claims=len(third_records),
+            round3_message_groups=3,
+            second_prior_slot_fixture=second_prior_metadata,
+            round3_child_proving_ms=third_child_proving_ms,
+            merge_sequence_requests=2 + int(committees > 1),
         )
         print(
-            f"  improvement: ready proof + {fresh_committees} prior-slot proofs, "
-            f"{fresh_count} new claims",
+            f"  round 2 and round 3: each takes one ready proof + {fresh_committees} "
+            f"fresh prior-slot proofs with {fresh_count} new claims",
             flush=True,
         )
-        result.update(measure_improvement(connection, children, fresh_children,
-                                          expected, improved_claims, repetitions))
+        result.update(measure_recursive_rounds(
+            connection, children, fresh_children, third_children, expected,
+            claims_for(second_records), claims_for(third_records), repetitions,
+        ))
 
     result.update(
         all_proofs_verified=True,
@@ -475,7 +528,8 @@ def build_info(args, resources):
         load_manifest(BUNDLE_DIRECTORY, result["leanvm_revision"]) if BUNDLE_DIRECTORY.exists() else None
     )
     if result["fixture_bundle"]:
-        require("prior_slot" in result["fixture_bundle"], "The bundled image needs prior-slot fixtures")
+        require(result["fixture_bundle"]["schema_version"] == 3,
+                "The bundled image needs both prior-slot fixture sets")
     result["harness_sha256"] = {
         name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
         for name in ("run.py", "environment.py", "fixture_bundle.py", "report.py")
@@ -494,7 +548,7 @@ def get_manifest(args, resources):
         "sidecar_timeout_seconds": args.timeout,
         "log_inv_rate": LOG_INV_RATE,
         "fixture_format": FIXTURE_FORMAT,
-        "improvement_workload": "prior-slot-append-v1",
+        "improvement_workload": "prior-slot-append-v2",
         "execution": args.execution,
         "host_cpu_model": args.host_cpu_model,
     }

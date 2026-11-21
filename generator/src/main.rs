@@ -128,7 +128,7 @@ fn verify_pack(path: &Path, threads: usize) -> Result<(), String> {
     let count = payload.len() / RECORD_BYTES;
     if threads == 0
         || count == 0
-        || count > MAX_RECORDS + MAX_PRIOR_SLOT_RECORDS
+        || count > MAX_RECORDS + 2 * MAX_PRIOR_SLOT_RECORDS
         || payload.len() % RECORD_BYTES != 0
     {
         return Err("invalid fixture pack size or thread count".into());
@@ -194,21 +194,26 @@ fn main() -> Result<(), String> {
         .ok_or("missing messages")?
         .parse()
         .map_err(|_| "bad messages")?;
-    let prior_slot = match args.get(5).map(String::as_str) {
-        None => false,
-        Some("--prior-slot") if args.len() == 6 => true,
-        _ => return Err("expected optional --prior-slot".into()),
+    let slots_back: u32 = match args.get(5).map(String::as_str) {
+        None => 0,
+        Some("--prior-slot") if args.len() == 6 => 1,
+        Some("--second-prior-slot") if args.len() == 6 => 2,
+        _ => return Err("expected optional --prior-slot or --second-prior-slot".into()),
     };
-    let (limit, key_offset, leaf) = if prior_slot {
-        (MAX_PRIOR_SLOT_RECORDS, MAX_RECORDS, CURRENT_LEAF - 1)
+    let (limit, key_offset) = if slots_back == 0 {
+        (MAX_RECORDS, 0)
     } else {
-        (MAX_RECORDS, 0, CURRENT_LEAF)
+        (
+            MAX_PRIOR_SLOT_RECORDS,
+            MAX_RECORDS + (slots_back as usize - 1) * MAX_PRIOR_SLOT_RECORDS,
+        )
     };
+    let leaf = CURRENT_LEAF - slots_back;
     if threads == 0 || messages != 1 || count > limit {
         return Err("invalid bounds".into());
     }
     let mut message = [0x42; 32];
-    message[..8].copy_from_slice(&u64::from(prior_slot).to_le_bytes());
+    message[..8].copy_from_slice(&u64::from(slots_back).to_le_bytes());
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let next = AtomicUsize::new(0);
     let generated = AtomicUsize::new(0);
