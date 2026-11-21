@@ -89,10 +89,11 @@ class Sidecar:
         require(response and response[0] == 0, f"Sidecar rejected request: {response[:200]!r}")
         return response[1:]
 
-    def aggregate(self, children, records):
+    def aggregate(self, children, records, output_claims=None):
         body = bytes((1, LOG_INV_RATE)) + u64(len(children))
         body += b"".join(frame(claims) + frame(proof) for claims, proof in children)
-        body += u64(len(records)) + b"".join(records) + u64(0) + u64(0) + b"\x00"
+        body += u64(len(records)) + b"".join(records) + u64(0) + u64(0)
+        body += b"\x00" if output_claims is None else b"\x01" + frame(output_claims)
         response = self.request(body)
         claims, offset = field(response, 0)
         proof, end = field(response, offset)
@@ -265,6 +266,10 @@ def measure_recursive_rounds(connection, children, fresh_children, third_childre
             verify_claims(connection, ready, first_claims)
         second_verify_ms = verify_claims(connection, improved, second_claims)
         third_verify_ms = verify_claims(connection, third, third_claims)
+        # One input proof, no raw signatures: remove the oldest message's claims.
+        # Keep this separate from the contiguous round 1–3 sequence timer.
+        pruned, prune_ms = timed(lambda: connection.aggregate([third], [], second_claims))
+        prune_verify_ms = verify_claims(connection, pruned, second_claims)
         timings = {
             "proposer_improvement": improvement_ms,
             "paired_first_merge": first_ms,
@@ -273,10 +278,17 @@ def measure_recursive_rounds(connection, children, fresh_children, third_childre
             "round3_merge": third_ms,
             "round3_verify": third_verify_ms,
             "merge_sequence": sequence_ms,
+            "prune": prune_ms,
+            "prune_verify": prune_verify_ms,
         }
-        return timings, improved, third
+        return timings, improved, third, pruned
 
-    initial, initial_second, initial_third = sample()
+    initial, initial_second, initial_third, initial_pruned = sample()
+    check_wrong_message(connection, initial_pruned)
+    require(
+        not connection.verify((third_claims, initial_pruned[1])),
+        "Pruned proof verified against the original unpruned claim set",
+    )
     for proof, previous_claims in ((initial_second, first_claims), (initial_third, second_claims)):
         check_wrong_message(connection, proof)
         require(
@@ -285,19 +297,21 @@ def measure_recursive_rounds(connection, children, fresh_children, third_childre
         )
 
     samples = {operation: [] for operation in initial}
-    improved_sizes, third_sizes = [], []
+    improved_sizes, third_sizes, pruned_sizes = [], [], []
     for index in range(repetitions):
-        timings, improved, third = sample()
+        timings, improved, third, pruned = sample()
         for operation, elapsed_ms in timings.items():
             if elapsed_ms is not None:
                 samples[operation].append(elapsed_ms)
         improved_sizes.append(len(improved[1]))
         third_sizes.append(len(third[1]))
+        pruned_sizes.append(len(pruned[1]))
         print(
             f"  recursive sequence {index + 1}/{repetitions}: "
             f"round 2 {timings['proposer_improvement']:.1f} ms, "
             f"round 3 {timings['round3_merge']:.1f} ms, "
-            f"total {timings['merge_sequence']:.1f} ms, verified",
+            f"total {timings['merge_sequence']:.1f} ms; "
+            f"separate prune {timings['prune']:.1f} ms, verified",
             flush=True,
         )
 
@@ -309,6 +323,8 @@ def measure_recursive_rounds(connection, children, fresh_children, third_childre
         "first_round3_merge_ms": initial["round3_merge"],
         "first_round3_verify_ms": initial["round3_verify"],
         "first_merge_sequence_ms": initial["merge_sequence"],
+        "first_prune_ms": initial["prune"],
+        "first_prune_verify_ms": initial["prune_verify"],
         **{operation: stats(values) if values else None for operation, values in samples.items()},
         "improved_proof_bytes": len(initial_second[1]),
         "warmed_improved_proof_bytes": improved_sizes,
@@ -318,6 +334,10 @@ def measure_recursive_rounds(connection, children, fresh_children, third_childre
         "warmed_round3_proof_bytes": third_sizes,
         "round3_wrong_message_rejected": True,
         "round3_incomplete_claims_rejected": True,
+        "pruned_proof_bytes": len(initial_pruned[1]),
+        "warmed_pruned_proof_bytes": pruned_sizes,
+        "pruned_wrong_message_rejected": True,
+        "pruned_original_claims_rejected": True,
     }
 
 
@@ -440,6 +460,12 @@ def run_case(args, manifest, size):
             second_prior_slot_fixture=second_prior_metadata,
             round3_child_proving_ms=third_child_proving_ms,
             merge_sequence_requests=2 + int(committees > 1),
+            prune_input_proofs=1,
+            prune_input_claims=len(third_records),
+            prune_retained_claims=len(second_records),
+            prune_removed_claims=len(oldest_records),
+            prune_input_messages=3,
+            prune_retained_messages=2,
         )
         print(
             f"  round 2 and round 3: each takes one ready proof + {fresh_committees} "
@@ -549,6 +575,7 @@ def get_manifest(args, resources):
         "log_inv_rate": LOG_INV_RATE,
         "fixture_format": FIXTURE_FORMAT,
         "improvement_workload": "prior-slot-append-v2",
+        "pruning_workload": "round3-drop-oldest-message-v1",
         "execution": args.execution,
         "host_cpu_model": args.host_cpu_model,
     }

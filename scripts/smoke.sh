@@ -37,6 +37,8 @@ if [[ $variant == bundled ]]; then
     fi
 fi
 docker run "${args[@]}" "$image" "${run[@]}" --resume | tee "$smoke_dir/resume.log"
+docker run "${args[@]}" --entrypoint python3 "$image" /opt/pq-bench/render_table.py /results \
+    > "$smoke_dir/container-table.log"
 if docker run "${args[@]}" "$image" "${run[@]}" --threads 1 --resume; then
     echo "Accepted a run with changed prover thread count" >&2
     exit 1
@@ -44,6 +46,7 @@ fi
 
 python3 - "$smoke_dir/results/summary.json" "$execution" "$variant" "$smoke_dir" <<'PY'
 import csv
+import copy
 import json
 from pathlib import Path
 from math import sqrt
@@ -115,6 +118,13 @@ for row in summary["cases"]:
     assert row["round3_total_claims"] == row["improvement_total_claims"] + row["round3_added_claims"]
     assert row["round3_message_groups"] == 3
     assert row["round3_wrong_message_rejected"] and row["round3_incomplete_claims_rejected"]
+    assert row["prune_input_proofs"] == 1
+    assert row["prune_input_claims"] == row["round3_total_claims"]
+    assert row["prune_retained_claims"] == row["improvement_total_claims"]
+    assert row["prune_removed_claims"] == row["round3_added_claims"]
+    assert row["prune_input_messages"] == 3 and row["prune_retained_messages"] == 2
+    assert row["pruned_wrong_message_rejected"] and row["pruned_original_claims_rejected"]
+    assert len(row["prune"]["samples_ms"]) == len(row["prune_verify"]["samples_ms"]) == 1
     third, = row["round3_merge"]["samples_ms"]
     sequence, = row["merge_sequence"]["samples_ms"]
     assert len(row["round3_verify"]["samples_ms"]) == 1
@@ -150,6 +160,8 @@ assert single_report["two_round_merge_n"] == "0" and single_report["two_round_me
 for row, raw in zip((single_report, merge_report, *saturated_reports), summary["cases"]):
     assert row["proposer_improvement_n"] == row["improved_verify_n"] == "1"
     assert row["round3_merge_n"] == row["round3_verify_n"] == row["merge_sequence_n"] == "1"
+    assert row["prune_n"] == row["prune_verify_n"] == "1"
+    assert float(row["prune_mean_ms"]) == raw["prune"]["samples_ms"][0]
     assert int(row["merge_sequence_requests"]) == raw["merge_sequence_requests"]
     assert float(row["merge_sequence_mean_ms"]) == raw["merge_sequence"]["samples_ms"][0]
     if raw["merge_operations"]:
@@ -172,6 +184,7 @@ assert max(map(len, narrow.splitlines())) <= 58
 for column in ("Comm/slot", "Sigs/comm", "Sigs/slot", "Merges", "Prove one (ms)",
                "Round 1 (ms)", "Round 2 (ms)", "Round 3 (ms)", "Two rounds (ms)",
                "Full sequence (ms)", "Verify orig. (ms)", "Verify R3 (ms)",
+               "Prune (ms)", "Prune verify (ms)",
                "Comm verify (ms)", "Final verify n", "Fresh proofs", "New claims"):
     assert column in narrow
 assert "Slot geometry" in narrow and "Timings by validator count" in narrow
@@ -183,8 +196,16 @@ markdown_header = next(line for line in markdown.splitlines() if "Committees / s
 gfm_rows = [line for line in markdown.splitlines() if line.startswith("| ")][:2 + len(summary["cases"])]
 assert all(line.count("|") == markdown_header.count("|") for line in gfm_rows)
 assert "Round 3 merge (ms)" in markdown_header and "Full sequence (ms)" in markdown_header
+assert "Prune (ms)" in markdown_header and "Prune (ms)" in wide_header
+# Recorded timings must remain visible even if extension metadata is missing.
+without_metadata = copy.deepcopy(summary["run"])
+without_metadata["settings"].pop("improvement_workload", None)
+without_metadata["settings"].pop("pruning_workload", None)
+assert render_mean_stdev(without_metadata, warmed_timings(summary["cases"])) == terminal
+assert render_mean_stdev(without_metadata, warmed_timings(summary["cases"]), markdown=True) == markdown
 for log in ("run.log", "resume.log"):
     assert (Path(sys.argv[4]) / log).read_text().endswith(terminal)
+assert (Path(sys.argv[4]) / "container-table.log").read_text() == terminal
 print("Verified proofs, claim unions, negative checks, runtime limits, resume and timing reports")
 PY
 

@@ -35,7 +35,7 @@ COPY --from=binaries /out/bin/ /usr/local/bin/
 COPY --from=binaries /out/build.json /opt/pq-bench/build.json
 COPY --from=binaries /out/licenses/ /usr/share/doc/pq-aggregation-bench/leanvm/
 COPY LICENSE-APACHE LICENSE-MIT /usr/share/doc/pq-aggregation-bench/
-COPY run.py environment.py fixture_bundle.py report.py /opt/pq-bench/
+COPY run.py environment.py fixture_bundle.py report.py render_table.py /opt/pq-bench/
 RUN mkdir -m 1777 /results /fixtures
 USER 65532:65532
 ENV BENCH_OUTPUT=/results BENCH_FIXTURES=/fixtures PYTHONDONTWRITEBYTECODE=1

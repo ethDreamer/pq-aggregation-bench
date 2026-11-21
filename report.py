@@ -18,6 +18,8 @@ GEOMETRY_FIELDS = (
 WARMED_OPERATIONS = ("committee_prove", "proposer_merge", "final_verify", "committee_verify")
 IMPROVEMENT_OPERATIONS = ("proposer_improvement", "paired_first_merge", "two_round_merge", "improved_verify")
 ROUND3_OPERATIONS = ("round3_merge", "round3_verify", "merge_sequence")
+PRUNE_OPERATIONS = ("prune", "prune_verify")
+ALL_OPERATIONS = WARMED_OPERATIONS + IMPROVEMENT_OPERATIONS + ROUND3_OPERATIONS + PRUNE_OPERATIONS
 IMPROVEMENT_FIELDS = (
     "improvement_fan_in", "improvement_fresh_proofs", "improvement_added_claims",
     "improvement_total_claims", "improvement_message_groups",
@@ -25,6 +27,16 @@ IMPROVEMENT_FIELDS = (
 ROUND3_FIELDS = (
     "round3_fan_in", "round3_fresh_proofs", "round3_added_claims",
     "round3_total_claims", "round3_message_groups", "merge_sequence_requests",
+)
+PRUNE_FIELDS = (
+    "prune_input_proofs", "prune_input_claims", "prune_retained_claims",
+    "prune_removed_claims", "prune_input_messages", "prune_retained_messages",
+)
+ALL_FIELDS = IMPROVEMENT_FIELDS + ROUND3_FIELDS + PRUNE_FIELDS
+PRUNE_NOTES = (
+    "Prune is a separate one-input recursive request: take the round 3 proof and retain only "
+    "the current and first prior-slot claims, dropping the oldest message. No raw signatures "
+    "are supplied. Pruning and its verification are outside Full sequence.",
 )
 IMPROVEMENT_NOTES = (
     "Round 2 extends the original proof with fresh prior-slot proofs. Verify original covers the "
@@ -40,9 +52,16 @@ ROUND3_NOTES = (
 )
 
 
-def report_extensions(settings):
+def report_extensions(settings, measured=()):
     workload = settings.get("improvement_workload")
-    return bool(workload), workload == "prior-slot-append-v2"
+    show_prune = bool(settings.get("pruning_workload")) or "prune" in measured
+    show_round3 = workload == "prior-slot-append-v2" or "round3_merge" in measured or show_prune
+    show_improvement = bool(workload) or "proposer_improvement" in measured or show_round3
+    return show_improvement, show_round3, show_prune
+
+
+def recorded_operations(rows):
+    return {operation for row in rows for operation in ALL_OPERATIONS if row.get(operation)}
 
 
 def save_text(path, text):
@@ -102,12 +121,12 @@ def markdown_table(columns, rows):
     yield "| " + " | ".join(columns) + " |"
     yield "| " + " | ".join(["---:"] * len(columns)) + " |"
     for row in rows:
-        yield "| " + " | ".join(f"{value:,}" if isinstance(value, int) else value for value in row) + " |"
+        yield "| " + " | ".join("—" if value is None else f"{value:,}" if isinstance(value, int) else value for value in row) + " |"
 
 
 def terminal_table(columns, rows, width=None):
     cells = [
-        tuple(f"{value:,}" if isinstance(value, int) else value for value in row)
+        tuple("—" if value is None else f"{value:,}" if isinstance(value, int) else value for value in row)
         for row in rows
     ]
     widths = [max(map(len, column)) for column in zip(columns, *cells)]
@@ -138,8 +157,8 @@ def warmed_timings(rows):
         (
             tuple(row[field] for field in GEOMETRY_FIELDS),
             tuple(timing_statistics(row.get(operation))
-                  for operation in WARMED_OPERATIONS + IMPROVEMENT_OPERATIONS + ROUND3_OPERATIONS),
-            tuple(row.get(field) for field in IMPROVEMENT_FIELDS + ROUND3_FIELDS),
+                  for operation in ALL_OPERATIONS),
+            tuple(row.get(field) for field in ALL_FIELDS),
         )
         for row in rows
     ]
@@ -147,21 +166,27 @@ def warmed_timings(rows):
 
 def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     hardware, build, settings = (manifest[key] for key in ("hardware", "build", "settings"))
-    show_improvement, show_round3 = report_extensions(settings)
-    primary, details, improvement_details = [], [], []
+    measured = {operation for _, timings, _ in data
+                for operation, (_, _, n) in zip(ALL_OPERATIONS, timings) if n}
+    show_improvement, show_round3, show_prune = report_extensions(settings, measured)
+    primary, details, improvement_details, prune_details = [], [], [], []
     for slot, timing, geometry in data:
         active_validators, _, _, _, merge_jobs = slot
         (
             prove, merge, final_verify, committee_verify, improvement, _, paired, improved_verify,
-            round3, round3_verify, sequence,
+            round3, round3_verify, sequence, prune, prune_verify,
         ) = timing
         round2_geometry = geometry[:len(IMPROVEMENT_FIELDS)]
-        _, _, _, round3_claims, round3_messages, merge_requests = geometry[len(IMPROVEMENT_FIELDS):]
+        round3_start = len(IMPROVEMENT_FIELDS)
+        prune_start = round3_start + len(ROUND3_FIELDS)
+        _, _, _, round3_claims, round3_messages, merge_requests = geometry[round3_start:prune_start]
         primary_row = [*slot, format_timing(prove), format_timing(merge) if merge_jobs else "Reuse"]
         if show_improvement:
             primary_row.extend((format_timing(improvement), format_timing(paired)))
         if show_round3:
             primary_row.extend((format_timing(round3), merge_requests, format_timing(sequence)))
+        if show_prune:
+            primary_row.append(format_timing(prune))
         primary_row.append(format_timing(final_verify))
         if show_round3:
             primary_row.append(format_timing(round3_verify))
@@ -175,6 +200,9 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
             if show_round3:
                 detail_row.extend((round3_claims, round3_messages))
             improvement_details.append(detail_row)
+        if show_prune:
+            prune_details.append((active_validators, *geometry[prune_start:],
+                                  format_timing(prune_verify), prune[2], prune_verify[2]))
 
     models = ", ".join(hardware.get("cpu_models") or []) or "unknown"
     architecture = hardware.get("architecture") or "unknown architecture"
@@ -196,6 +224,9 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     title = "PQ aggregation benchmark timing statistics"
     details_title = "Committee verification and sample counts"
     improvement_title = "Recursive workload and round 2 verification"
+    prune_title = "One-proof pruning workload"
+    prune_columns = ("Validators", "Inputs", "Input claims", "Kept claims", "Removed claims",
+                     "Input messages", "Kept messages", "Prune verify (ms)", "Prune n", "Verify n")
     leanvm = f"`{pin}`" if markdown else pin
     metadata = [
         f"Runtime CPU {models} ({architecture}, {execution} execution).",
@@ -228,11 +259,13 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
             shared_notes.extend(ROUND3_NOTES)
         else:
             shared_notes.append("Single-committee cases have one recursive merge, in round 2.")
+    if show_prune:
+        shared_notes.extend(PRUNE_NOTES)
     notes = [
         "Timings are arithmetic mean ± sample standard deviation in milliseconds. "
         "The standard deviation uses n − 1 in the denominator. " +
         ("All tables" if show_improvement else "Both tables") + " use warmed samples and exclude initial requests.",
-        f"Single-committee cases show {reuse} and have zero merge jobs. "
+        f"Single-committee cases show {reuse} and have zero round 1 merge jobs. "
         "A dash marks a missing timing or a standard deviation with fewer than two samples.",
         *shared_notes,
     ]
@@ -245,6 +278,8 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
             columns.extend(("Round 2 merge (ms)", "Two rounds (ms)"))
         if show_round3:
             columns.extend(("Round 3 merge (ms)", "Merge RPCs", "Full sequence (ms)"))
+        if show_prune:
+            columns.append("Prune (ms)")
         columns.append("Verify original (ms)" if show_improvement else "Verify final (ms)")
         if show_round3:
             columns.append("Verify round 3 (ms)")
@@ -269,6 +304,7 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
                 "Committee verify n", "Merge n", "Final verify n",
             ], details),
             *improvement_section,
+            *(["", f"## {prune_title}", "", *markdown_table(prune_columns, prune_details)] if show_prune else []),
             "",
         ])
 
@@ -282,6 +318,8 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
         columns.extend(("Round 2 (ms)", "Two rounds (ms)"))
     if show_round3:
         columns.extend(("Round 3 (ms)", "Merge RPCs", "Full sequence (ms)"))
+    if show_prune:
+        columns.append("Prune (ms)")
     columns.append("Verify orig. (ms)" if show_improvement else "Verify (ms)")
     if show_round3:
         columns.append("Verify R3 (ms)")
@@ -316,7 +354,8 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
     lines = [
         title, "", *(fill(line, width) if width is not None else line for line in metadata), "",
         *(fill(line, width) if width is not None else line for line in terminal_notes), "",
-        *primary_table, "", details_title, "", *detail_table, *improvement_section, "",
+        *primary_table, "", details_title, "", *detail_table, *improvement_section,
+        *(["", prune_title, "", *terminal_table(prune_columns, prune_details, width)] if show_prune else []), "",
     ]
     return "\n".join(lines)
 
@@ -325,10 +364,12 @@ def write_mean_stdev_report(directory, manifest, rows):
     data = warmed_timings(rows)
     save_text(directory / "results-mean-stdev.md", render_mean_stdev(manifest, data, markdown=True))
 
-    show_improvement, show_round3 = report_extensions(manifest["settings"])
+    show_improvement, show_round3, show_prune = report_extensions(manifest["settings"], recorded_operations(rows))
     operations = WARMED_OPERATIONS + (IMPROVEMENT_OPERATIONS if show_improvement else ())
     if show_round3:
         operations += ROUND3_OPERATIONS
+    if show_prune:
+        operations += PRUNE_OPERATIONS
     timing_columns = (
         f"{operation}_{statistic}"
         for operation in operations
@@ -337,6 +378,8 @@ def write_mean_stdev_report(directory, manifest, rows):
     geometry_columns = IMPROVEMENT_FIELDS if show_improvement else ()
     if show_round3:
         geometry_columns += ROUND3_FIELDS
+    if show_prune:
+        geometry_columns += PRUNE_FIELDS
     numeric = (
         (
             *slot,
@@ -358,13 +401,16 @@ def write_report(directory, manifest, rows):
         "Committee verify median (ms)", "First merge (ms)", "Merge median (ms)",
         "Final verify median (ms)", "Final proof (bytes)", "Samples per operation",
     ]
-    show_improvement, show_round3 = report_extensions(manifest["settings"])
+    show_improvement, show_round3, show_prune = report_extensions(manifest["settings"], recorded_operations(rows))
     if show_improvement:
         columns.extend(["Improvement fan-in", "New claims", "Improvement median (ms)",
                         "Two rounds median (ms)"])
     if show_round3:
         columns.extend(["Round 3 median (ms)", "Merge RPCs", "Full sequence median (ms)",
                         "Round 3 verify median (ms)", "Round 3 total claims"])
+    if show_prune:
+        columns.extend(["Prune median (ms)", "Prune verify median (ms)", "Prune input claims",
+                        "Prune retained claims", "Prune removed claims"])
     table = []
     for row in rows:
         merge = row["proposer_merge"]
@@ -396,6 +442,11 @@ def write_report(directory, manifest, rows):
                 round(row["merge_sequence"]["median_ms"], 2),
                 round(row["round3_verify"]["median_ms"], 2),
                 row["round3_total_claims"],
+            ])
+        if show_prune:
+            table[-1].extend([
+                round(row["prune"]["median_ms"], 2), round(row["prune_verify"]["median_ms"], 2),
+                row["prune_input_claims"], row["prune_retained_claims"], row["prune_removed_claims"],
             ])
 
     write_csv(directory / "results.csv", columns, table)
@@ -468,6 +519,7 @@ def write_report(directory, manifest, rows):
         "",
         *(IMPROVEMENT_NOTES if show_improvement else ()),
         *(ROUND3_NOTES if show_round3 else ()),
+        *(PRUNE_NOTES if show_prune else ()),
         *([""] if show_improvement else []),
         "See [summary.json](summary.json) for runtime and build metadata, initial and warmed timing "
         "samples, fixture hashes, proof sizes and load averages.",

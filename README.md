@@ -51,6 +51,15 @@ python3 render_table.py /path/to/saved-run
 python3 render_table.py /path/to/saved-run/summary.json --markdown > timings.md
 ```
 
+The renderer detects recorded recursive timings even when the run's workload metadata is absent.
+Older runs show only operations they measured; rendering cannot recover an unmeasured round.
+The image also includes the renderer at `/opt/pq-bench/render_table.py` for use with
+`--entrypoint python3`. Keep the renderer updated along with the benchmark.
+
+The main table includes **Prune (ms)** for new runs. Its details list input, retained and
+removed claim counts, verification time and sample counts. All terminal, Markdown and CSV
+reports include the recursive rounds and pruning measurements recorded by the run.
+
 To regenerate the CSV and all other reports as well, use the report command. Omit `--output` to write beside the saved results, or give a separate directory to keep the source read-only.
 
 ```sh
@@ -78,6 +87,17 @@ In round 2, the benchmark merges the original result with `min(C, 15)` fresh ful
 The round 1 column keeps the standalone timing from the original workload. **Two rounds** times the consecutive round 1 and round 2 aggregate RPCs in each multi-committee repetition. **Full sequence** extends the same timer through round 3. Single-committee cases start with their reused proof, so their full sequence measures rounds 2 and 3. All fresh proofs are ready before timing begins, and claim checking and proof verification follow the sequence. This measures local execution with inputs ready. Allow separately for collection, propagation and other proposer work when comparing to a deadline.
 
 Timed requests include Python request construction and local Unix-socket transport. Initial and warmed timings are both recorded. The sidecar performs its own internal initialization and warm-up before accepting the initial request. Fixture generation, signing, networking, consensus state work, and node scheduling are outside the timed intervals.
+
+After each recursive sequence, a separate **Prune** request passes the round 3 proof with
+its full claims as the only child, no raw signatures, and `OutputClaims::Only` retaining
+the current and first prior-slot claims. This drops the entire oldest message and creates
+a new proof. Its time is excluded from **Two rounds** and **Full sequence**. The harness
+checks the exact retained claims and verifies the new proof; the initial pruned proof must
+reject both a changed message and the original unpruned claim set. Every validator size
+measures this same pattern, so the existing signatures-per-committee column plus the
+pruning claim counts describe its size. At 262,144 validators it retains 15,872 of 23,552
+claims; at 1,048,576 it retains 63,488 of 94,208. Different retention patterns may have
+different costs. These synthetic groups do not implement an on-chain inclusion filter.
 
 The generator makes one-leaf XMSS keys using public deterministic seeds. Each signature has the full 2,404-byte wire layout and both layers of verification work. Unused subtrees are opaque commitments, so only the selected leaf is signable. The fixture generator checks each new signature with the pinned upstream verifier and rejects a mutated message. **Use these fixtures only for benchmarks.** They do not measure production key generation or signing.
 

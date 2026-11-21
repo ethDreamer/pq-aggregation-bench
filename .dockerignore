@@ -9,5 +9,6 @@
 !environment.py
 !fixture_bundle.py
 !report.py
+!render_table.py
 !LICENSE-APACHE
 !LICENSE-MIT
