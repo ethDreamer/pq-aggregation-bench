@@ -29,6 +29,33 @@ fn th_pair(pp: &PublicParam, tw: &Tweak, seed: &SchemeSeed) -> [Digest; 2] {
     pair
 }
 
+// Compatibility helpers for the pinned upstream WOTS module. Generation is setup,
+// not a timed prover operation; every resulting signature uses upstream verification.
+fn th_many<const K: usize>(
+    pp: &PublicParam,
+    inputs: impl ExactSizeIterator<Item = (Tweak, [Digest; K])>,
+) -> Vec<[u8; 32]> {
+    inputs
+        .map(|(tw, payload)| hasher(pp, &tw).update(payload.as_flattened()).finalize())
+        .collect()
+}
+fn th_digests_many<const K: usize>(
+    pp: &PublicParam,
+    inputs: impl ExactSizeIterator<Item = (Tweak, [Digest; K])>,
+) -> Vec<Digest> {
+    th_many(pp, inputs)
+        .into_iter()
+        .map(keccak256::truncate)
+        .collect()
+}
+fn public_leaf(pp: &PublicParam, seed: &SchemeSeed, layer: usize, index: u32) -> Digest {
+    let secrets = upstream_wots::wots_secrets(pp, seed, layer, index);
+    let ends: [Digest; V] = std::array::from_fn(|i| {
+        upstream_wots::chain(pp, layer, index, i, 0, CHAIN_LEN - 1, secrets[i])
+    });
+    th_digests(pp, &tweak(TWEAK_LEAF, layer_hi(layer, 0), index), &ends)
+}
+
 // Only the chosen leaf exists as a signable key. All other subtrees are opaque,
 // domain-separated commitments. Heights and verification work are unchanged.
 fn sparse_path(seed: &[u8; 32], layer: usize, leaf: u32) -> [Digest; LAYER_HEIGHT] {
@@ -71,11 +98,11 @@ fn fixture(seed: &[u8; 32], message: &[u8; 32], leaf: u32) -> Result<Vec<u8>, St
     let scheme_seed = scheme_seed(seed);
     let pp = public_param(&scheme_seed);
     let bottom_path = sparse_path(seed, 0, leaf);
-    let bottom_leaf = upstream_wots::wots_public_leaf(&pp, &scheme_seed, 0, leaf);
+    let bottom_leaf = public_leaf(&pp, &scheme_seed, 0, leaf);
     let bottom_root = root(&pp, 0, leaf, bottom_leaf, &bottom_path);
     let top_index = layer_index(leaf, 1);
     let top_path = sparse_path(seed, 1, top_index);
-    let top_leaf = upstream_wots::wots_public_leaf(&pp, &scheme_seed, 1, top_index);
+    let top_leaf = public_leaf(&pp, &scheme_seed, 1, top_index);
     let top_root = root(&pp, 1, top_index, top_leaf, &top_path);
     let mut pk_bytes = [0; 32];
     pk_bytes[..N].copy_from_slice(&top_root);
@@ -209,11 +236,15 @@ fn main() -> Result<(), String> {
         )
     };
     let leaf = CURRENT_LEAF - slots_back;
-    if threads == 0 || messages != 1 || count > limit {
+    if threads == 0
+        || count == 0
+        || ![1, 16].contains(&messages)
+        || count % messages != 0
+        || (slots_back != 0 && messages != 1)
+        || count > limit
+    {
         return Err("invalid bounds".into());
     }
-    let mut message = [0x42; 32];
-    message[..8].copy_from_slice(&u64::from(slots_back).to_le_bytes());
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let next = AtomicUsize::new(0);
     let generated = AtomicUsize::new(0);
@@ -227,11 +258,21 @@ fn main() -> Result<(), String> {
                     if index >= count {
                         break;
                     }
+                    let mut message = [0x42; 32];
+                    let message_index = if messages == 1 {
+                        u64::from(slots_back)
+                    } else {
+                        (index / (count / messages)) as u64
+                    };
+                    message[..8].copy_from_slice(&message_index.to_le_bytes());
                     let path = directory.join(format!("key-{index:05}.bin"));
                     if path.exists() {
                         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-                        if bytes.len() != messages * RECORD_BYTES {
-                            return Err(format!("wrong fixture length: {}", path.display()));
+                        if bytes.len() != RECORD_BYTES || bytes[32..64] != message {
+                            return Err(format!(
+                                "wrong fixture length or message: {}",
+                                path.display()
+                            ));
                         }
                     } else {
                         // Public, deterministic BENCHMARK seeds; never use these for deposits.

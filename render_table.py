@@ -19,6 +19,16 @@ def read_saved_run(path):
 
     summary = json.loads(path.read_text(encoding="utf-8"))
     manifest = summary["run"]
+    if "selected_cases" in manifest["settings"]:
+        from selected_cases import valid_case
+        plan = {c["case_id"]: c for c in manifest["settings"]["selected_cases"]}
+        rows = {}
+        for row in summary["cases"]:
+            key = row.get("case_id")
+            if key not in plan or key in rows or not valid_case(row, manifest, plan[key]):
+                raise ValueError(f"Summary contains an invalid selected case: {key}")
+            rows[key] = row
+        return manifest, [rows[key] for key in plan if key in rows]
     sizes = manifest["settings"]["sizes"]
     rows_by_size = {}
     for row in summary["cases"]:
@@ -36,7 +46,11 @@ def main():
     args = parser.parse_args()
     try:
         manifest, rows = read_saved_run(args.results)
-        print(render_mean_stdev(manifest, warmed_timings(rows), markdown=args.markdown), end="")
+        if "selected_cases" in manifest["settings"]:
+            from selected_cases import render_selected
+            print(render_selected(manifest, rows, markdown=args.markdown), end="")
+        else:
+            print(render_mean_stdev(manifest, warmed_timings(rows), markdown=args.markdown), end="")
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Unable to render timing table: {error}\n")
 

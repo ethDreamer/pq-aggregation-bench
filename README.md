@@ -2,19 +2,23 @@
 
 Measure leanVM’s experimental rate-2 prover with real XMSS committee proofs, recursive slot aggregation, and two proposer rounds that extend an existing aggregate. The image has native Linux AMD64 and ARM64 binaries, Python, and a fixture generator. It runs without a Lighthouse build, a testnet, or network access.
 
-The default is leanVM [`c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764`](https://github.com/leanEthereum/leanVM/commit/c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764), the [bindings v0.15.0 release](https://github.com/leanEthereum/leanVM/releases/tag/bindings-v0.15.0) selected for devnet-0. The benchmark builds the signer, prover, verifier, and sidecar from that exact commit. It uses the experimental prover at log inverse rate 2 (code rate 1/4).
+The default matches Lighthouse's **pq-devnet-1** backend: leanVM [`351f7ae421529ce164ed747eee1f78bdeaec3e80`](https://github.com/leanEthereum/leanVM/commit/351f7ae421529ce164ed747eee1f78bdeaec3e80), bindings **v0.19.0**, experimental prover, log inverse rate 2. A small Rust worker links the same in-process `lean_vm` API with `cpu_tiers` and the pinned upstream `tier-rustc` wrapper. It does not build Lighthouse. Its allocator matches Lighthouse's jemalloc 0.6.1 with `abort_conf:true,narenas:16` (Linux also enables background-thread support).
+
+Python uses a local socket to orchestrate the worker, but **proving and verification timings come from inside Rust**, around the same API/proof-conversion boundary as Lighthouse. Proving includes child proof decoding, `lean_vm::aggregate`, the expected-claim check and output proof encoding. Signature/claim input conversion and socket transfers are outside that timer. Verification includes proof decoding and `AggregateProof::verify`. Initialization is reported as setup. Per-case `.rpc.json` files separately record backend and socket roundtrip time for every request. Existing paired/full-sequence columns remain observed orchestration elapsed time and are labeled accordingly. This measures the proving backend; it does not model other beacon-node load.
+
+Build from this checkout before using the new-version commands below. Source changes alone do not update published Docker tags. Images use the leanVM revision in their tag, plus an immutable benchmark-source tag. Old v0.15 results and tags retain their original meaning and RPC timing boundary.
 
 Historical results use [`283686575c4e81790591d2c6e3ed21c69c0e3bbe`](https://github.com/leanEthereum/leanVM/commit/283686575c4e81790591d2c6e3ed21c69c0e3bbe). Their original images remain available as `leanvm-283686575c4e` and `leanvm-283686575c4e-fixtures`.
 
 ## Run
 
-Use the **bundled image** to run the full 11-case sweep without generating fixtures. On a native Linux AMD64 or ARM64 engine, let Docker select the matching image and use `--execution native`. Check the engine architecture with `docker info --format '{{.Architecture}}'`.
+A **bundled image**, when built for the selected revision, runs the full 11-case sweep without generating fixtures. On a native Linux AMD64 or ARM64 engine, let Docker select the matching image and use `--execution native`. Check the engine architecture with `docker info --format '{{.Architecture}}'`.
 
 ```sh
 mkdir -p results/full
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/results/full:/results" \
-  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42-fixtures \
+  ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152-fixtures \
   --execution native
 ```
 
@@ -26,7 +30,7 @@ For a smaller download or a different leanVM pin, use the fixture-free image. It
 mkdir -p results/quick fixtures
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/results/quick:/results" -v "$PWD/fixtures:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 \
+  ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152 \
   --execution native --sizes 64 8192
 ```
 
@@ -34,7 +38,7 @@ Cached records are namespaced by fixture format, leanVM SHA, and slot workload. 
 
 The defaults are five timed repeats and one initial request per repeated operation. Set `--threads` for the prover and `--fixture-threads` for fixture preparation. They default to the effective CPU capacity rounded down, with a minimum of one. Fixture workers never exceed the number of keys. `--reps` controls sample count and `--timeout` controls sidecar startup and socket timeouts. For emulated or unverified execution, keep the default `--execution unverified` or declare `--execution emulated` and use the result for correctness checks.
 
-On AMD64 the image chooses the highest compiled CPU profile supported by all CPUs available to the process. Use `--cpu-profile portable` to match the compile flags of the historic AMD64 runs. Keep the same host, CPU profile, thread count and sizes when comparing leanVM revisions. The report records the selected profile, Rust flags, binary digest and full leanVM commit.
+The default backend uses leanVM runtime CPU dispatch on both architectures. Leave `--cpu-profile auto`; old forced profiles and `LEANVM_TIER` overrides are rejected for in-process runs. Reports record the actual upstream tier, available tiers, protocol version, compiler flags, wrapper digest and binary digests. Legacy sidecar builds still support their old CPU-profile flags. Keep hardware and thread counts fixed for comparisons.
 
 Each output directory holds one run. Repeat the command with `--resume` to skip completed rows after interruption. Resume requires the same kernel boot, hardware limits, executable hashes, benchmark code, settings, and case selection. A different machine, reboot, pin, or settings requires a new directory.
 
@@ -72,7 +76,7 @@ Either image can also regenerate the report with the saved run mounted read-only
 mkdir -p reports
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$PWD/saved-run:/source:ro" -v "$PWD/reports:/results" \
-  --entrypoint python3 ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 \
+  --entrypoint python3 ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152 \
   /opt/pq-bench/report.py /source --output /results
 ```
 
@@ -129,35 +133,102 @@ The three-round bundle keeps the original 32,768 current-slot fixtures and 30,72
 mkdir -p fixtures/source fixtures/prior-source fixtures/second-prior-source
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/source:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 32768 4 1
+  ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152 /fixtures 32768 4 1
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/prior-source:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 30720 4 1 --prior-slot
+  ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152 /fixtures 30720 4 1 --prior-slot
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint pq-geometry-fixtures -v "$PWD/fixtures/second-prior-source:/fixtures" \
-  ethdreamer/pq-aggregation-bench:leanvm-c5ee9d239e42 /fixtures 30720 4 1 --second-prior-slot
+  ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152 /fixtures 30720 4 1 --second-prior-slot
 python3 fixture_bundle.py pack fixtures/source fixtures/bundle \
   --prior-slot-source fixtures/prior-source --second-prior-slot-source fixtures/second-prior-source \
-  --leanvm-revision c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
+  --leanvm-revision 351f7ae421529ce164ed747eee1f78bdeaec3e80
 FIXTURE_BUNDLE="$PWD/fixtures/bundle" ./scripts/build-image.sh --load
 ```
 
 `FIXTURE_BUNDLE` selects the two `-fixtures` tags. The fixture payload is passed as a separate build context and stays out of Git. The image records its full SHA-256 and exposes the same bytes on both architectures. An override to a different leanVM revision can use the fixture-free build.
 
-### CPU profiles
+### Version and CPU compatibility
 
-AMD64 builds have these CPU profiles. The launcher checks the kernel's reported flags before it runs an optimized binary. Request a specific profile to repeat a run with the same instruction set.
+`LEANVM_REV=<full SHA> ./scripts/build-image.sh --load` (or `--push`) preserves revision selection. The default v0.19 build uses the in-process API; an override must expose the compatible `lean_vm` aggregate/verify/claims API, `cpu_tiers`, upstream tier wrapper and compatible XMSS fixture interfaces. Compile failures are deliberate for incompatible future APIs; no fallback changes the requested revision. Revisions before the in-process API use the existing legacy sidecar builder and record `legacy-rpc-v1` timings. Tested legacy pins are `c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764` and the historical `283686575c4e81790591d2c6e3ed21c69c0e3bbe`; use their existing immutable images to reproduce published runs.
 
-| Profile | Additional build features |
-| --- | --- |
-| `generic` | Base x86-64 |
-| `portable` | SSSE3 and PCLMULQDQ, the historical Docker flags |
-| `avx2` | Portable features plus AVX2 and BMI2 |
-| `avx2-gfni` | AVX2 profile plus GFNI and VPCLMULQDQ |
-| `avx512` | AVX2-GFNI profile plus AVX-512F, BW, and VBMI |
+The v0.19 binary contains upstream CPU tiers and selects at runtime. Its baseline is generic ARM64 or x86-64, without forcing build-host CPU features. Legacy AMD64 builds instead contain `generic`, `portable`, `avx2`, `avx2-gfni` and `avx512` binaries selected by Linux flags. Historical and new timing boundaries are different and explicitly recorded; do not relabel old results as v0.19.
 
-Both leanVM revisions compile their Keccak SIMD kernels according to target features. The Core i5-8600K and i9-9900K support AVX2. The Core i7-1165G7 also supports AVX-512 and can select the AVX-512 profile when Linux exposes all required features. An emulated guest or a hypervisor can expose fewer features. Choose native execution for performance runs. [i5-8600K](https://www.intel.com/content/www/us/en/products/sku/126685/intel-core-i58600k-processor-9m-cache-up-to-4-30-ghz/specifications.html) · [i9-9900K](https://www.intel.com/content/www/us/en/products/sku/186605/intel-core-i99900k-processor-16m-cache-up-to-5-00-ghz/specifications.html) · [i7-1165G7](https://www.intel.com/content/www/us/en/products/sku/208921/intel-core-i71165g7-processor-12m-cache-up-to-4-70-ghz-with-ipu/specifications.html)
-
-Linux ARM64 uses the existing ARMv8 AES/PMULL profile and jemalloc configured for kernels with up to 64 KiB pages. For all platforms the fixture hashes, committee geometry and protocol settings stay fixed across CPU profiles.
+Fixture caches are version-isolated. Reusing an older fixture bundle at a new version requires rebuilding its manifest and verifying **every signature with the new pinned verifier**; matching sizes or protocol labels alone are not sufficient. Multi-message fixtures use a separate cache namespace keyed by message count and total signatures.
 
 The benchmark is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE). leanVM and its WOTS code retain their upstream license.
+
+## Run individual workloads
+
+`--test` is repeatable. With no `--test`, the historical full suite is unchanged
+(committee proving, initial merge, rounds 2/3 and pruning at all 11 sizes).
+`--sizes` filters modeled validator geometries for the selected operations.
+Fixed `merge-16x2048-*` cases run once regardless of `--sizes`; they report the
+actual proof/message/claim counts, not an invented active-validator count.
+
+```sh
+# Use an image built from this source revision; older published tags lack --test.
+IMAGE=ethdreamer/pq-aggregation-bench:leanvm-351f7ae42152
+mkdir -p results fixtures
+
+docker run --rm "$IMAGE" --list-tests
+
+# Only the 16-message merge; fixture generation and input proving are setup.
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results:/results" -v "$PWD/fixtures:/fixtures" "$IMAGE" \
+  --execution native --test merge-16x2048-multi-message --output /results/16-messages
+
+# Matched single-message control, independently selectable.
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results:/results" -v "$PWD/fixtures:/fixtures" "$IMAGE" \
+  --execution native --test merge-16x2048-same-message --output /results/one-message
+
+# A subset: committee proving + round 2, at two validator geometries.
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results:/results" -v "$PWD/fixtures:/fixtures" "$IMAGE" \
+  --execution native --test committee-proof --test round2 \
+  --sizes 8192 262144 --output /results/subset
+
+# Original suite.
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/results:/results" -v "$PWD/fixtures:/fixtures" "$IMAGE" \
+  --execution native --output /results/full
+
+# Source equivalents, with previously built binaries/build.json available.
+python3 run.py --list-tests
+python3 run.py --test merge-16x2048-multi-message --execution native --output results/16-messages
+python3 run.py --test committee-proof --test round2 --sizes 8192 262144 --output results/subset
+python3 run.py --output results/full
+python3 render_table.py results/16-messages
+python3 render_table.py results/16-messages --markdown
+```
+
+Both fixed cases use 16 actual input proofs, each proving 2,048 signatures by
+**disjoint keys**, for 32,768 claims in one timed merge request. The multi-message
+case assigns a different 32-byte signed message to each group, representing
+16 consecutive slots in one epoch (the same XMSS leaf). Its matched control uses
+the same key seeds and leaf but one common message. These are cryptographic
+workloads; they do not simulate gossip, proposer eligibility or a whole network.
+The shape can represent 16 slots sampled from a 65,536-validator epoch with one
+2,048-validator committee per slot. No validators repeat between input proofs.
+
+Only the selected operation is repeatedly timed. Necessary dependency proofs are
+prepared once, with setup elapsed time and per-input proof times recorded
+separately. Every output is checked against the exact expected claim set;
+wrong-message and missing-claim verification must fail. Pruning additionally
+rejects the original unpruned claim set. The first request is excluded from the
+warmed statistics, as in the historical suite. A single-committee `slot-merge`
+reuses its input and reports no merge timing.
+
+Multi-message signatures need a new fixture cache; even a bundled image must
+have a writable `/fixtures` mount for this case. Existing bundles still accelerate
+the one-message control. Setup can take longer than the merge. Use `--reps 1`
+for a correctness smoke or the default five warmed measurements for comparisons.
+To resume, repeat the **same selection and settings** with `--resume`. Changing
+tests, geometry, binary/version, hardware or harness requires a new output directory.
+
+Selected runs export `summary.json`, `results.csv`, `results-mean-stdev.csv`,
+`results.md` and `results-mean-stdev.md`. Their tables identify the workload and
+input/output proof, message and claim counts. Historical reports remain readable.
+The default leanVM pin is the devnet-1 v0.19 revision; `LEANVM_REV=<full-sha> ./scripts/build-image.sh`
+still builds a different revision with that revision recorded in its reports.

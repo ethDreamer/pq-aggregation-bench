@@ -83,6 +83,9 @@ def belongs_to_run(row, manifest, size):
 
 
 def measured_rows(directory, manifest):
+    if "selected_cases" in manifest["settings"]:
+        from selected_cases import selected_rows
+        return selected_rows(directory, manifest)
     rows = []
     for size in manifest["settings"]["sizes"]:
         path = directory / "cases" / f"{size}.json"
@@ -246,6 +249,8 @@ def render_mean_stdev(manifest, data, *, markdown=False, width=None):
         metadata.append(
             f"{bindings}Experimental prover, CPU profile {profile}, log inverse rate {settings['log_inv_rate']}."
         )
+    if settings.get("operation_timing") == "in-process-api-v1":
+        metadata.append("Operation times are internal leanVM API timings; sequence totals are orchestration elapsed times. Per-request backend and socket roundtrip timings are saved in .rpc.json files.")
     if settings.get("host_cpu_model"):
         metadata.append(f"Operator reports a physical host CPU of {settings['host_cpu_model']}.")
     if sample_counts:
@@ -393,6 +398,9 @@ def write_mean_stdev_report(directory, manifest, rows):
 
 
 def write_report(directory, manifest, rows):
+    if "selected_cases" in manifest["settings"]:
+        from selected_cases import write_selected_report
+        return write_selected_report(directory, manifest, rows)
     save_json(directory / "summary.json", {"run": manifest, "cases": rows})
 
     columns = [
@@ -479,9 +487,11 @@ def write_report(directory, manifest, rows):
         f"- Prover threads {settings['prover_threads']}, fixture workers {settings['fixture_threads']}, "
         f"{settings['repetitions']} timed repetitions and one initial request per repeated operation.",
         f"- Rust build `{build['rustc']}` with `{build['rustflags']}`.",
-        f"- Sidecar SHA-256 `{build['sidecar_sha256']}`.",
+        f"- Worker SHA-256 `{build['sidecar_sha256']}`.",
         f"- Fixture generator SHA-256 `{build['fixture_generator_sha256']}`.",
     ]
+    if settings.get("operation_timing") == "in-process-api-v1":
+        lines.append("- Operation timings are internal leanVM API calls; paired/full-sequence totals include orchestration. Per-request backend and socket roundtrip measurements are in `.rpc.json` files.")
     if build.get("sidecar_cpu_profile"):
         lines.append(
             f"- Prover CPU profile `{build['sidecar_cpu_profile']}`. "

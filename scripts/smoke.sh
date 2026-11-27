@@ -68,15 +68,21 @@ assert hardware["memory_cgroup_limit_bytes"] == 6 * 2**30
 assert settings["execution"] == sys.argv[2]
 assert settings["repetitions"] == 1
 assert settings["log_inv_rate"] == 2
-assert build["sidecar_wire_version"] == 1 and build["sidecar_verifier"] == "leanvm-v1"
+assert build["sidecar_wire_version"] in (1, 2) and build["sidecar_verifier"] == "leanvm-v1"
 if build["leanvm_revision"] == "c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764":
     assert build["leanvm_bindings_version"] == "0.15.0"
 variants = build["sidecar_variants"]
 selected = select_sidecar(variants, "auto", set(hardware["cpu_flags"]))
-assert selected["profile"] == build["sidecar_cpu_profile"]
+in_process = build.get("backend") == "leanvm-in-process"
+if in_process:
+    assert settings["operation_timing"] == "in-process-api-v1"
+    assert build["sidecar_cpu_profile"] == build["runtime_dispatch"]["cpu_tier"]
+    assert list(summary_path.parent.glob("cases/*.rpc.json"))
+else:
+    assert selected["profile"] == build["sidecar_cpu_profile"]
 assert selected["sidecar_sha256"] == build["sidecar_sha256"]
 assert selected["rustflags"] == build["rustflags"]
-if build["target_platform"] == "linux/amd64":
+if build["target_platform"] == "linux/amd64" and not in_process:
     assert select_sidecar(variants, "auto", set())["profile"] == "generic"
     for profile in ("portable", "avx2", "avx2-gfni", "avx512"):
         candidate, = (item for item in variants if item["profile"] == profile)

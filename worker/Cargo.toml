@@ -1,0 +1,18 @@
+[package]
+name = "pq-bench-worker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+lean_vm = { path = "../leanvm/crates/lean_vm", features = ["cpu_tiers"] }
+experimental_dispatch = { path = "../leanvm/crates/experimental_dispatch", features = ["cpu_tiers"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tikv-jemallocator = { version = "=0.6.1", features = ["stats"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { version = "=0.6.1", features = ["stats", "background_threads"] }

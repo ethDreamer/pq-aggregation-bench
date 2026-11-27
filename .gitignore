@@ -6,3 +6,9 @@ fixtures/
 *.oci.tar
 *.log
 /smoke/
+
+/leanvm
+/generator/Cargo.lock
+/generator/src/upstream_wots.rs
+/worker/Cargo.lock
+/build.json

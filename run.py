@@ -29,7 +29,10 @@ from fixture_bundle import (
 from fixture_bundle import digest_records, fresh_committee_count, load_manifest, slot_geometry
 from report import measured_rows, render_mean_stdev, save_json, warmed_timings, write_report
 
+from selected_cases import TESTS, WORKLOAD_VERSION, case_plan, render_selected, run_selected_case
+
 LOG_INV_RATE = 2
+_LAST_BACKEND_MS = None
 CPU_PROFILES = ("auto", "generic", "portable", "avx2", "avx2-gfni", "avx512")
 
 
@@ -63,11 +66,18 @@ class Sidecar:
         self.client = client
         self.stream = stream
         hello = self.read()
-        require(hello[:12] == b"leanvmsc\x01\x00\x00\x00", "Expected leanVM sidecar wire version 1")
+        require(hello[:8] == b"leanvmsc", "Expected benchmark worker hello")
+        self.wire_version = int.from_bytes(hello[8:12], "little")
+        require(self.wire_version in (1, 2), "Unsupported worker wire version")
+        self.rpc_timings = []
+        self.runtime = None
         require(len(hello) >= 20, "Truncated sidecar hello")
         self.max_request, = struct.unpack_from("<Q", hello, 12)
         verifier, offset = field(hello, 20)
         prover, end = field(hello, offset)
+        if self.wire_version == 2:
+            runtime, end = field(hello, end)
+            self.runtime = json.loads(runtime)
         require(
             end == len(hello) and verifier == b"leanvm-v1" and prover == b"experimental",
             "Expected the leanvm-v1 verifier and experimental prover",
@@ -83,11 +93,23 @@ class Sidecar:
         return data
 
     def request(self, body):
+        global _LAST_BACKEND_MS
         require(len(body) <= self.max_request, "Request exceeds the sidecar limit")
+        start = time.perf_counter_ns()
         self.client.sendall(frame(body))
         response = self.read()
         require(response and response[0] == 0, f"Sidecar rejected request: {response[:200]!r}")
-        return response[1:]
+        payload = response[1:]
+        roundtrip_ms = (time.perf_counter_ns() - start) / 1e6
+        if self.wire_version == 2:
+            require(len(payload) >= 8, "Missing internal operation timer")
+            elapsed, = struct.unpack("<d", payload[-8:])
+            require(math.isfinite(elapsed) and elapsed >= 0, "Invalid internal operation timer")
+            payload = payload[:-8]
+            _LAST_BACKEND_MS = elapsed
+            self.rpc_timings.append({"operation": "aggregate" if body[0] == 1 else "verify",
+                                     "backend_ms": elapsed, "roundtrip_ms": roundtrip_ms})
+        return payload
 
     def aggregate(self, children, records, output_claims=None):
         body = bytes((1, LOG_INV_RATE)) + u64(len(children))
@@ -128,6 +150,7 @@ def open_sidecar(args, settings, log_path):
                 [args.sidecar, "--socket", str(path), "--threads", str(settings["prover_threads"])],
                 stdout=log, stderr=log,
             )
+            connection = None
             try:
                 while not path.exists():
                     require(process.poll() is None, f"Sidecar exited during startup. See {log_path}")
@@ -146,6 +169,8 @@ def open_sidecar(args, settings, log_path):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+                if connection is not None and connection.wire_version == 2:
+                    save_json(log_path.with_suffix(".rpc.json"), {"runtime": connection.runtime, "requests": connection.rpc_timings})
 
 
 def claims_for(records):
@@ -203,9 +228,11 @@ def prepare_fixtures(args, manifest, count, slots_back=0):
 
 
 def timed(call):
+    global _LAST_BACKEND_MS
+    _LAST_BACKEND_MS = None
     start = time.perf_counter_ns()
     value = call()
-    return value, (time.perf_counter_ns() - start) / 1e6
+    return value, _LAST_BACKEND_MS if _LAST_BACKEND_MS is not None else (time.perf_counter_ns() - start) / 1e6
 
 
 def stats(samples):
@@ -550,6 +577,12 @@ def build_info(args, resources):
         with open(path, "rb") as binary:
             digest = hashlib.file_digest(binary, "sha256").hexdigest()
         require(digest == result[key], f"Executable hash differs from build metadata: {path}")
+    if result.get("backend") == "leanvm-in-process":
+        require(args.cpu_profile == "auto", "The in-process backend uses upstream runtime CPU dispatch; --cpu-profile must be auto")
+        require(not os.environ.get("LEANVM_TIER"), "Unset LEANVM_TIER to match devnet-1 automatic CPU dispatch")
+        runtime = json.loads(subprocess.check_output([args.sidecar, "--describe"], text=True))
+        result["runtime_dispatch"] = runtime
+        result["sidecar_cpu_profile"] = runtime["cpu_tier"]
     result["fixture_bundle"] = (
         load_manifest(BUNDLE_DIRECTORY, result["leanvm_revision"]) if BUNDLE_DIRECTORY.exists() else None
     )
@@ -558,7 +591,7 @@ def build_info(args, resources):
                 "The bundled image needs both prior-slot fixture sets")
     result["harness_sha256"] = {
         name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-        for name in ("run.py", "environment.py", "fixture_bundle.py", "report.py")
+        for name in ("run.py", "environment.py", "fixture_bundle.py", "report.py", "selected_cases.py", "render_table.py")
     }
     return result
 
@@ -579,7 +612,12 @@ def get_manifest(args, resources):
         "execution": args.execution,
         "host_cpu_model": args.host_cpu_model,
     }
-    compatibility = {"schema_version": 1, "hardware": resources, "build": build_info(args, resources), "settings": settings}
+    if args.test:
+        settings["selected_cases"] = case_plan(args.test, args.sizes)
+        settings["selected_workload_version"] = WORKLOAD_VERSION
+    build = build_info(args, resources)
+    settings["operation_timing"] = "in-process-api-v1" if build.get("backend") == "leanvm-in-process" else "legacy-rpc-v1"
+    compatibility = {"schema_version": 1, "hardware": resources, "build": build, "settings": settings}
     path = args.output / "run.json"
     if path.exists():
         require(args.resume, f"{path} already exists. Use --resume or a new output directory.")
@@ -611,6 +649,8 @@ def get_manifest(args, resources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--list-tests", action="store_true", help="list selectable workloads and exit")
+    parser.add_argument("--test", action="append", choices=TESTS, help="select a workload (repeatable; omitted: historical full suite)")
     parser.add_argument("--sizes", type=int, nargs="+", choices=SIZES, default=SIZES, metavar="N",
                         help="validator counts (default: full sweep: %(choices)s)")
     parser.add_argument("--threads", type=positive_integer, help="prover threads (default: effective CPU capacity)")
@@ -628,9 +668,15 @@ def main():
     parser.add_argument("--build-info", type=Path, default=Path(__file__).with_name("build.json"))
     parser.add_argument("--cpu-profile", choices=CPU_PROFILES, default="auto",
                         help="compiled prover CPU profile (default: use the highest supported in the image)")
-    parser.add_argument("--sidecar", help="override the selected sidecar executable with the same digest")
+    parser.add_argument("--worker", "--sidecar", dest="sidecar", help="override the selected worker executable with the same digest (--sidecar is a legacy alias)")
     parser.add_argument("--generator", default="pq-geometry-fixtures")
     args = parser.parse_args()
+    if args.list_tests:
+        for name, description in TESTS.items():
+            print(f"{name}: {description}")
+        return
+    if args.test and len(set(args.test)) != len(args.test):
+        parser.error("--test must not contain duplicates")
     if len(set(args.sizes)) != len(args.sizes):
         parser.error("--sizes must not contain duplicates")
     if args.host_cpu_model and (len(args.host_cpu_model) > 160 or not args.host_cpu_model.isprintable()):
@@ -648,18 +694,30 @@ def main():
             case_directory = args.output / "cases"
             case_directory.mkdir(exist_ok=True)
             rows = measured_rows(args.output, manifest)
-            completed = {row["active_validators"] for row in rows}
             write_report(args.output, manifest, rows)
-            for size in manifest["settings"]["sizes"]:
-                if size in completed:
-                    print(f"Skipping completed case N={size}", flush=True)
-                    continue
-                result = run_case(args, manifest, size)
-                save_json(case_directory / f"{size}.json", result)
-                rows = measured_rows(args.output, manifest)
-                write_report(args.output, manifest, rows)
+            if args.test:
+                completed = {row["case_id"] for row in rows}
+                for case in manifest["settings"]["selected_cases"]:
+                    if case["case_id"] in completed:
+                        print(f"Skipping completed case {case['case_id']}", flush=True)
+                        continue
+                    result = run_selected_case(args, manifest, case)
+                    save_json(case_directory / f"{case['case_id']}.json", result)
+                    rows = measured_rows(args.output, manifest)
+                    write_report(args.output, manifest, rows)
+                table = render_selected(manifest, rows)
+            else:
+                completed = {row["active_validators"] for row in rows}
+                for size in manifest["settings"]["sizes"]:
+                    if size in completed:
+                        print(f"Skipping completed case N={size}", flush=True)
+                        continue
+                    result = run_case(args, manifest, size)
+                    save_json(case_directory / f"{size}.json", result)
+                    rows = measured_rows(args.output, manifest)
+                    write_report(args.output, manifest, rows)
+                table = render_mean_stdev(manifest, warmed_timings(rows))
             print(f"Reports written to {args.output}", flush=True)
-            table = render_mean_stdev(manifest, warmed_timings(rows))
             print(table, end="", flush=True)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Benchmark failed: {error}\n")

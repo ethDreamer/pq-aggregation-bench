@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG RUST_IMAGE=rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
-ARG LEANVM_REV=c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764
+ARG LEANVM_REV=351f7ae421529ce164ed747eee1f78bdeaec3e80
 FROM ${RUST_IMAGE} AS binaries
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
@@ -15,7 +15,8 @@ RUN set -eu; \
     git -C leanvm checkout -q --detach FETCH_HEAD; \
     test "$(git -C leanvm rev-parse HEAD)" = "$revision"
 COPY generator/ generator/
-COPY scripts/build-binaries.sh .
+COPY worker/ worker/
+COPY scripts/build-binaries.sh scripts/build-legacy-binaries.sh ./
 ARG TARGETARCH
 ARG BENCH_REV=unrecorded
 RUN --mount=type=cache,id=pq-aggregation-registry,target=/usr/local/cargo/registry \
@@ -35,7 +36,7 @@ COPY --from=binaries /out/bin/ /usr/local/bin/
 COPY --from=binaries /out/build.json /opt/pq-bench/build.json
 COPY --from=binaries /out/licenses/ /usr/share/doc/pq-aggregation-bench/leanvm/
 COPY LICENSE-APACHE LICENSE-MIT /usr/share/doc/pq-aggregation-bench/
-COPY run.py environment.py fixture_bundle.py report.py render_table.py /opt/pq-bench/
+COPY run.py environment.py fixture_bundle.py report.py render_table.py selected_cases.py /opt/pq-bench/
 RUN mkdir -m 1777 /results /fixtures
 USER 65532:65532
 ENV BENCH_OUTPUT=/results BENCH_FIXTURES=/fixtures PYTHONDONTWRITEBYTECODE=1

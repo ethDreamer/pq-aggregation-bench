@@ -18,7 +18,7 @@ MAX_IMPROVEMENT_CHILDREN = 16
 BUNDLE_DIRECTORY = Path(__file__).with_name("bundled-fixtures")
 BASELINE_RESULTS = Path(__file__).with_name("baseline") / "results"
 # Verified against every record using the corresponding XMSS verifier.
-COMPATIBLE_REVISIONS = {"c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764"}
+COMPATIBLE_REVISIONS = {"c5ee9d239e42d0bc8113eb4aee3e2cae5faf1764", "351f7ae421529ce164ed747eee1f78bdeaec3e80"}
 
 
 def slot_geometry(size):

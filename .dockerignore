@@ -12,3 +12,10 @@
 !render_table.py
 !LICENSE-APACHE
 !LICENSE-MIT
+
+!selected_cases.py
+!scripts/build-legacy-binaries.sh
+!worker/
+!worker/Cargo.toml
+!worker/src/
+!worker/src/main.rs

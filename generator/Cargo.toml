@@ -7,6 +7,10 @@ publish = false
 
 [workspace]
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 keccak256 = { path = "../leanvm/crates/keccak256" }
 lean_xmss = { path = "../leanvm/crates/lean_xmss" }

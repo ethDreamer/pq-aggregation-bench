@@ -40,6 +40,8 @@ jobs:
           persist-credentials: false
       - name: Confirm native architecture
         run: test "$(uname -m)" = "$EXPECTED_MACHINE"
+      - name: Selection unit tests
+        run: python3 -m unittest -q test_selected_cases
       - name: Build and verify the fixture-free image
         if: ${{ !inputs.bundled_image }}
         env:
@@ -52,6 +54,7 @@ jobs:
           else
             ./scripts/smoke.sh pq-aggregation-bench:smoke
           fi
+          ./scripts/smoke-selected.sh pq-aggregation-bench:smoke
       - name: Verify the published bundled image
         if: ${{ inputs.bundled_image }}
         env:
