@@ -232,3 +232,15 @@ Selected runs export `summary.json`, `results.csv`, `results-mean-stdev.csv`,
 input/output proof, message and claim counts. Historical reports remain readable.
 The default leanVM pin is the devnet-1 v0.19 revision; `LEANVM_REV=<full-sha> ./scripts/build-image.sh`
 still builds a different revision with that revision recorded in its reports.
+
+### Build without a local Docker engine
+
+The manually dispatched **Native image artifacts** workflow builds and checks
+both native architectures on the repository's existing GitHub Actions runners.
+It exports fixture-free and standard bundled Docker archives as artifacts. It
+does not need registry credentials or publish tags. An operator can download
+these archives, verify their SHA-256 checksums and source/version files, then
+use a daemonless registry client such as `crane` with their existing Docker Hub
+login to push each architecture and assemble the multiarch indexes. The standard
+fixtures are checked with the requested verifier before their manifest is bound
+to that revision; the bundled Docker build verifies them again.

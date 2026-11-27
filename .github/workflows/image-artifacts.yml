@@ -1,0 +1,79 @@
+name: Native image artifacts
+
+# Builds use public runners and public dependencies. Registry credentials stay on
+# the operator's machine; download these archives and publish with crane.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: amd64
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      ARCHITECTURE: ${{ matrix.architecture }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build, check and export native images
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          revision=$(sed -n 's/^ARG LEANVM_REV=//p' Dockerfile)
+          image="ethdreamer/pq-aggregation-bench:leanvm-${revision:0:12}"
+          export_dir="$RUNNER_TEMP/pq-image-artifacts"
+          bundle_dir="$RUNNER_TEMP/pq-standard-fixtures"
+          mkdir -p "$export_dir" "$bundle_dir" "$RUNNER_TEMP/results" "$RUNNER_TEMP/fixtures"
+          BUILD_METADATA="$export_dir/free-build.json" ./scripts/build-image.sh --load
+          docker run --rm "$image" --list-tests
+          docker run --rm --network none --user "$(id -u):$(id -g)" --cpus 2 --memory 6g \
+            -v "$RUNNER_TEMP/results:/results" -v "$RUNNER_TEMP/fixtures:/fixtures" \
+            "$image" --execution native --test slot-merge --sizes 8192 --reps 1
+          # Preserve the public old fixture bytes, but verify every signature
+          # with the newly built version before binding its manifest to that pin.
+          old_image=ethdreamer/pq-aggregation-bench@sha256:c4cc3d6976c7cd83d3930c44c47f75c6ea3619a238451c38af42469512c42aa8
+          docker pull "$old_image"
+          container_id=$(docker create "$old_image")
+          docker cp "$container_id:/opt/pq-bench/bundled-fixtures/fixtures.bin" "$bundle_dir/fixtures.bin"
+          docker cp "$container_id:/opt/pq-bench/bundled-fixtures/manifest.json" "$bundle_dir/manifest.json"
+          docker rm "$container_id"
+          docker run --rm --network none -v "$bundle_dir:/bundle:ro" \
+            --entrypoint pq-geometry-fixtures "$image" --verify-pack /bundle/fixtures.bin 2
+          chmod u+w "$bundle_dir/manifest.json"
+          python3 - "$bundle_dir/manifest.json" "$revision" <<'PY'
+          import json,sys
+          from pathlib import Path
+          path=Path(sys.argv[1])
+          manifest=json.loads(path.read_text())
+          manifest['leanvm_revision']=sys.argv[2]
+          path.write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+          FIXTURE_BUNDLE="$bundle_dir" BUILD_METADATA="$export_dir/bundled-build.json" ./scripts/build-image.sh --load
+          docker save "$image" | gzip -1 > "$export_dir/free-$ARCHITECTURE.tar.gz"
+          docker save "$image-fixtures" | gzip -1 > "$export_dir/bundled-$ARCHITECTURE.tar.gz"
+          printf '%s\n' "$GITHUB_SHA" > "$export_dir/source-revision.txt"
+          printf '%s\n' "$revision" > "$export_dir/leanvm-revision.txt"
+          cd "$export_dir"
+          sha256sum ./*.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pq-images-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/pq-image-artifacts/
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
