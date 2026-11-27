@@ -123,7 +123,7 @@ LEANVM_REV=refs/heads/my-upstream-branch ./scripts/build-image.sh --load
 
 The helper emits `leanvm-<12-character-sha>` and `leanvm-<12-character-sha>-bench-<12-character-harness-sha>` tags. With a registry login, authorized repository, and a two-platform Buildx builder, use `IMAGE=your-registry/your-repo ./scripts/build-image.sh --push` to publish one index for Linux AMD64 and ARM64. Use the registry digest when you need an immutable image reference. The build labels store the full SHAs. `RUST_IMAGE` can override the Rust base if a newer revision needs a different toolchain.
 
-Future revisions must support the experimental prover feature, sidecar wire v1, the rate-2 request, and the XMSS layout and helpers used here. A revision that changes these interfaces requires an update to the harness. Run `./scripts/smoke.sh IMAGE` after changing the pin. GitHub Actions runs the smoke on native AMD64 and ARM64 runners.
+Revision overrides must support the selected in-process or legacy backend interface and the XMSS layout/helpers described under Version and CPU compatibility below. A revision that changes these interfaces requires a harness update. Run `./scripts/smoke.sh IMAGE` and `./scripts/smoke-selected.sh IMAGE` after changing the pin. GitHub Actions runs both on native AMD64 and ARM64 runners.
 
 ### Build the bundled variant
 
